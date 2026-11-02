@@ -28,7 +28,15 @@ fs.mkdirSync(path.join(OUT, 'shared'), { recursive: true });
 fs.copyFileSync(path.join(ROOT, 'shared', 'shared.js'), path.join(OUT, 'shared', 'shared.js'));
 fs.mkdirSync(path.join(OUT, 'vendor'), { recursive: true });
 let client;
-try { client = require.resolve('socket.io/client-dist/socket.io.min.js'); }
+try {
+  let dir = path.dirname(require.resolve('socket.io'));
+  for (let i = 0; i < 4 && !client; i++) {
+    const f = path.join(dir, 'client-dist', 'socket.io.min.js');
+    if (fs.existsSync(f)) client = f;
+    dir = path.dirname(dir);
+  }
+  if (!client) throw new Error('client-dist not found');
+}
 catch (e) { console.error('socket.io bulunamadı — önce "npm install" çalıştırın.'); process.exit(1); }
 fs.copyFileSync(client, path.join(OUT, 'vendor', 'socket.io.min.js'));
 fs.writeFileSync(path.join(OUT, 'config.js'),

@@ -28,6 +28,18 @@ const CORS = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((s
 // BLOCKOPS_DEV_SHIM=1 is set (offline CI / sandbox testing).
 // ---------------------------------------------------------------------------
 let createIO, clientBundlePath;
+// socket.io's package "exports" map blocks deep require() paths, so locate client-dist
+// relative to the package's main entry (…/socket.io/dist/index.js → …/socket.io/client-dist).
+function socketIoClientBundle() {
+  const main = require.resolve('socket.io');
+  let dir = path.dirname(main);
+  for (let i = 0; i < 4; i++) {
+    const f = path.join(dir, 'client-dist', 'socket.io.min.js');
+    if (fs.existsSync(f)) return f;
+    dir = path.dirname(dir);
+  }
+  throw new Error('socket.io client bundle not found');
+}
 try {
   const { Server } = require('socket.io');
   createIO = (server) => new Server(server, {
@@ -38,10 +50,10 @@ try {
     perMessageDeflate: false,
     maxHttpBufferSize: 64 * 1024
   });
-  clientBundlePath = require.resolve('socket.io/client-dist/socket.io.min.js');
+  clientBundlePath = socketIoClientBundle();
 } catch (e) {
   if (process.env.BLOCKOPS_DEV_SHIM !== '1') {
-    console.error('socket.io bulunamadı. Önce "npm install" çalıştırın.');
+    console.error('socket.io yüklenemedi. Önce "npm install" çalıştırın.', e.message);
     process.exit(1);
   }
   const shim = require('../scripts/devshim/shim-server.js');

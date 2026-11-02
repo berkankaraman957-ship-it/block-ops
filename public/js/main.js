@@ -7,7 +7,7 @@
 import { Renderer, BoxBatch, M4, Node } from './engine.js';
 import { WorldRenderer } from './world.js';
 import { ViewModel } from './viewmodel.js';
-import { Avatar, buildBomb } from './models.js';
+import { Avatar, buildBomb, buildGun } from './models.js';
 import { Effects } from './effects.js';
 import { Sfx } from './audio.js';
 import { Input } from './input.js';
@@ -15,7 +15,7 @@ import { HUD } from './hud.js';
 import { Net } from './net.js';
 
 const S = window.SHARED;
-const { CONFIG, WEAPONS, BTN, MAP } = S;
+const { CONFIG, WEAPONS, BTN } = S;
 const STEP = 1 / CONFIG.INPUT_RATE;
 const $ = (id) => document.getElementById(id);
 
@@ -25,7 +25,7 @@ if (isTouch) document.body.classList.add('touch');
 // ---------------------------------------------------------------------------
 // SETTINGS
 // ---------------------------------------------------------------------------
-const DEFAULTS = { name: '', room: '', bots: '9', server: '', sens: 1, tsens: 1, fov: 80, vol: 0.7, quality: isTouch ? 'medium' : 'high' };
+const DEFAULTS = { name: '', room: '', bots: '9', server: '', sens: 1, tsens: 1, fov: 82, vol: 0.7, quality: 'auto', map: 'dustgrid', difficulty: 'medium', showFps: false };
 function loadSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('blockops.settings') || '{}')); }
   catch (e) { return Object.assign({}, DEFAULTS); }
@@ -41,9 +41,11 @@ class Game {
     this.canvas = $('game');
     const q = this.settings.quality;
     const dpr = window.devicePixelRatio || 1;
-    const pr = q === 'low' ? Math.min(dpr, 0.85) : q === 'medium' ? Math.min(dpr, isTouch ? 1.25 : 1.5) : Math.min(dpr, 2);
-    this.renderer = new Renderer(this.canvas, { antialias: q === 'high', pixelRatio: pr });
-    if (q === 'low') this.renderer.fog = [22, 60];
+    // Render resolution: "auto" starts at a sane cap and adapts to the measured frame time.
+    this.maxRatio = q === 'low' ? Math.min(dpr, 0.75) : q === 'medium' ? Math.min(dpr, 1.0) : q === 'high' ? Math.min(dpr, 2) : Math.min(dpr, isTouch ? 1.15 : 1.25);
+    this.minRatio = q === 'auto' ? 0.5 : this.maxRatio;
+    this.renderer = new Renderer(this.canvas, { antialias: q === 'high', pixelRatio: this.maxRatio });
+    this.frameTimes = []; this.lastScaleCheck = performance.now();
     this.opaque = new BoxBatch(this.renderer, 2048);
     this.alphaBatch = new BoxBatch(this.renderer, 512);
     this.addBatch = new BoxBatch(this.renderer, 512);
@@ -51,7 +53,6 @@ class Game {
     this.vmAdd = new BoxBatch(this.renderer, 32);
 
     this.world = new S.VoxelWorld();
-    S.generateMap(this.world);
     this.worldR = new WorldRenderer(this.renderer, this.world);
     this.fx = new Effects(this.world);
     this.vm = new ViewModel();
@@ -62,6 +63,9 @@ class Game {
     this.input.touchSens = this.settings.tsens;
     this.hud = new HUD(this);
     this.net = null;
+    this.nadeModels = { he: buildGun('he'), flash: buildGun('flash'), smoke: buildGun('smoke') };
+    this.mapThumbs = {};
+    this.loadWorld(S.MAPS[this.settings.map] ? this.settings.map : S.MAP_ORDER[0]);
 
     this.proj = M4.create(); this.view = M4.create(); this.vp = M4.create();
     this.camWorld = M4.create();
@@ -104,6 +108,13 @@ class Game {
     this.showStats = false;
     this.paused = false;
     this.chatOpen = false;
+    this.nadesView = new Map();
+    this.smokes = [];
+    this.flashUntil = 0; this.flashDur = 1;
+    this.interpDelay = CONFIG.INTERP_DELAY_MS; this.snapJitter = 0; this.lastSnapAt = 0;
+    this.radarDots = []; this.radarBomb = null; this.radarCenter = [32, 32]; this.lastRadar = 0;
+    this.seenEnemy = new Map();
+    this.difficulty = this.settings ? this.settings.difficulty : 'medium';
     if (this.fx) { this.fx.particles = []; this.fx.decals = []; this.fx.tracers = []; }
   }
 
@@ -115,9 +126,75 @@ class Game {
   }
 
   // -------------------------------------------------------------------------
+  // WORLD / MAP LOADING
+  // -------------------------------------------------------------------------
+  loadWorld(mapId) {
+    this.mapId = mapId;
+    const map = S.getMap(mapId);
+    S.generateMap(this.world, mapId);
+    this.renderer.setTheme(map.theme);
+    if (this.settings.quality === 'low') this.renderer.fog = [map.theme.fog[0] * 0.7, map.theme.fog[1] * 0.7];
+    this.worldR.markAll();
+    this.radarImg = WorldRenderer.topDownCanvas(this.world, map, 4, true);
+    if (this.fx) { this.fx.particles = []; this.fx.decals = []; this.fx.tracers = []; }
+    const rm = $('radarMap'); if (rm) rm.textContent = map.name.toUpperCase();
+  }
+
+  buildMenu() {
+    const cards = $('mapCards');
+    cards.innerHTML = '';
+    const tmp = new S.VoxelWorld();
+    for (const id of S.MAP_ORDER) {
+      const m = S.getMap(id);
+      S.generateMap(tmp, id);
+      const card = document.createElement('div');
+      card.className = 'map-card' + (id === this.settings.map ? ' on' : '');
+      const thumb = WorldRenderer.topDownCanvas(tmp, m, 3);
+      const cv = document.createElement('canvas');
+      cv.width = 192; cv.height = 120;
+      const ctx = cv.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(thumb, 0, (thumb.height - thumb.width * 120 / 192) / 2, thumb.width, thumb.width * 120 / 192, 0, 0, 192, 120);
+      card.appendChild(cv);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.innerHTML = `<div class="name">${m.name.toUpperCase()}</div><div class="desc">${m.desc}</div>`;
+      card.appendChild(meta);
+      card.addEventListener('click', () => {
+        this.settings.map = id; saveSettings(this.settings);
+        cards.querySelectorAll('.map-card').forEach((c) => c.classList.remove('on'));
+        card.classList.add('on');
+        if (!this.inGame) this.loadWorld(id);
+      });
+      cards.appendChild(card);
+    }
+    const db = $('diffBtns');
+    db.innerHTML = '';
+    for (const id of ['easy', 'medium', 'hard']) {
+      const d = S.DIFFICULTY[id];
+      const b = document.createElement('button');
+      b.className = id + (id === this.settings.difficulty ? ' on' : '');
+      b.textContent = d.label;
+      b.addEventListener('click', () => {
+        this.settings.difficulty = id; saveSettings(this.settings);
+        db.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        $('diffDesc').textContent = d.desc;
+      });
+      db.appendChild(b);
+    }
+    $('diffDesc').textContent = (S.DIFFICULTY[this.settings.difficulty] || S.DIFFICULTY.medium).desc;
+    document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === t));
+      document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('on', p.dataset.pane === t.dataset.tab));
+    }));
+    $('verText').textContent = 'v' + CONFIG.VERSION + ' · ' + S.MAP_ORDER.length + ' harita · ' + Object.keys(WEAPONS).length + ' silah/bomba';
+  }
+
+  // -------------------------------------------------------------------------
   // UI BINDINGS
   // -------------------------------------------------------------------------
   bindUI() {
+    this.buildMenu();
     const s = this.settings;
     $('inName').value = s.name || ('Oyuncu' + Math.floor(Math.random() * 900 + 100));
     $('inRoom').value = s.room || '';
@@ -136,7 +213,10 @@ class Game {
     bindRange('inVol', 'volVal', 'vol', (v) => Math.round(v * 100) + '%', (v) => { this.sfx.setVolume(v); $('inVol2').value = v; $('volVal2').textContent = Math.round(v * 100) + '%'; });
     bindRange('inVol2', 'volVal2', 'vol', (v) => Math.round(v * 100) + '%', (v) => { this.sfx.setVolume(v); $('inVol').value = v; $('volVal').textContent = Math.round(v * 100) + '%'; });
     $('inQuality').value = s.quality;
-    $('inQuality').addEventListener('change', () => { s.quality = $('inQuality').value; saveSettings(s); $('menuErr').textContent = 'Kalite ayarı sayfa yenilenince uygulanır.'; });
+    $('inQuality').addEventListener('change', () => { s.quality = $('inQuality').value; saveSettings(s); location.reload(); });
+    $('inShowFps').checked = !!s.showFps;
+    this.showStats = !!s.showFps; $('stats').classList.toggle('hidden', !this.showStats);
+    $('inShowFps').addEventListener('change', () => { s.showFps = $('inShowFps').checked; saveSettings(s); this.showStats = s.showFps; $('stats').classList.toggle('hidden', !this.showStats); });
 
     $('btnQuick').addEventListener('click', () => this.start(''));
     $('btnJoin').addEventListener('click', () => {
@@ -173,6 +253,7 @@ class Game {
     I.on('slot1', () => this.switchTo(1));
     I.on('slot2', () => this.switchTo(2));
     I.on('slot3', () => this.switchTo(3));
+    I.on('slot4', () => this.switchTo(4));
     I.on('lastWeapon', () => this.switchTo(this.prevSlot));
     I.on('nextWeapon', () => this.cycleWeapon(1));
     I.on('prevWeapon', () => this.cycleWeapon(-1));
@@ -255,7 +336,7 @@ class Game {
       await this.net.connect(url);
       this.bindNet();
       $('loadingText').textContent = 'Odaya katılınıyor...';
-      const res = await this.net.join({ name: s.name, room: roomCode, bots: parseInt(s.bots, 10) || 0 });
+      const res = await this.net.join({ name: s.name, room: roomCode, bots: parseInt(s.bots, 10) || 0, map: s.map, difficulty: s.difficulty });
       this.onJoined(res);
     } catch (err) {
       $('menuErr').textContent = err.message || String(err);
@@ -269,8 +350,8 @@ class Game {
   onJoined(res) {
     this.resetState();
     this.myId = res.id; this.myNum = res.num; this.roomId = res.room;
-    this.world.data.fill(0);
-    S.generateMap(this.world);
+    this.difficulty = res.difficulty || 'medium';
+    this.loadWorld(res.map);
     for (const [x, y, z, t] of res.blocks) this.world.set(x, y, z, t);
     this.worldR.markAll();
     this.hud.setRoster(res.roster || []);
@@ -280,7 +361,7 @@ class Game {
     this.hud.show(true);
     this.updateInputEnabled();
     if (!isTouch) this.input.requestLock();
-    this.hud.centerMsg('Oda kodu: ' + this.roomId + ' — arkadaşlarını davet et!', 6000);
+    this.hud.centerMsg(`${S.getMap(this.mapId).name} · ${(S.DIFFICULTY[this.difficulty] || {}).label} · Oda kodu: ${this.roomId} — arkadaşlarını davet et!`, 7000);
     if (isTouch && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
   }
 
@@ -296,7 +377,8 @@ class Game {
     $('menu').classList.remove('hidden');
     for (const el of this.tagEls.values()) el.remove();
     this.tagEls.clear();
-    this.world.data.fill(0); S.generateMap(this.world); this.worldR.markAll();
+    this.hud.endScreen(null, false);
+    this.loadWorld(S.MAPS[this.settings.map] ? this.settings.map : S.MAP_ORDER[0]);
     this.updateInputEnabled();
   }
 
@@ -329,8 +411,28 @@ class Game {
         if (t === 0 && old) this.fx.blockBreak(x, y, z, old);
       }
     });
-    n.on('wreset', () => {
-      this.world.data.fill(0); S.generateMap(this.world); this.worldR.markAll(); this.fx.clearDecals();
+    n.on('wreset', (m) => {
+      const mapId = m && m.map ? m.map : this.mapId;
+      if (mapId !== this.mapId) { this.loadWorld(mapId); this.hud.big(S.getMap(mapId).name.toUpperCase(), 'Yeni harita · ısınma', '', 4000); this.hud.endScreen(null, false); }
+      else { S.generateMap(this.world, mapId); this.worldR.markAll(); this.fx.clearDecals(); }
+      this.nadesView.clear(); this.smokes = [];
+    });
+    n.on('throw', (m) => {
+      const r = this.remotes.get(m.i);
+      if (r && r.state) { r.avatar.recoil = 1.5; this.sfx.throwNade([r.state.x, r.state.y + 1.5, r.state.z]); }
+    });
+    n.on('nadeb', (m) => this.sfx.nadeBounce([m.x, m.y, m.z]));
+    n.on('nade', (m) => {
+      const pos = [m.x, m.y, m.z];
+      if (m.e === 'he') { this.fx.heBlast(m.x, m.y, m.z); this.sfx.heBlast(pos); }
+      else if (m.e === 'flash') { this.fx.flashBurst(m.x, m.y, m.z); this.sfx.flashBang(pos, 0); }
+      else if (m.e === 'smoke') this.sfx.smokeHiss(pos);
+      this.nadesView.delete(m.id);
+    });
+    n.on('flashed', (m) => {
+      this.flashUntil = performance.now() + m.d;
+      this.flashDur = m.d;
+      this.sfx.flashBang(null, Math.min(3, m.d / 1000));
     });
     n.on('rstart', (m) => {
       this.hud.big('RAUNT ' + m.rd, 'Hazırlık süresi — [B] ile market', '', 2600);
@@ -342,10 +444,9 @@ class Game {
     n.on('rend', (m) => { this.hud.roundEnd(m, this.myTeam); this.sfx.roundEnd(m.w === this.myTeam); });
     n.on('half', () => this.hud.big('DEVRE ARASI', 'Takımlar taraf değiştiriyor', '', 4000));
     n.on('over', (m) => {
-      const t = m.w === 'DRAW' ? 'BERABERE' : (m.w === 'T' ? 'SALDIRI' : 'SAVUNMA') + ' MAÇI KAZANDI';
-      this.hud.big(t, `${m.sc.T} - ${m.sc.CT}`, m.w, 9000);
-      this.hud.setScoreboard(true);
-      setTimeout(() => this.hud.setScoreboard(false), 8000);
+      this.hud.endScreen(m, true);
+      this.sfx.roundEnd(m.w === this.myTeam);
+      setTimeout(() => this.hud.endScreen(null, false), (CONFIG.ROUND.GAMEOVER - 0.5) * 1000);
     });
     n.on('bomb', (m) => this.onBombEvent(m));
     n.on('buyr', (r) => { this.hud.buyResult(r); this.sfx.ui(r.ok); });
@@ -374,6 +475,25 @@ class Game {
   // SNAPSHOT + RECONCILIATION
   // -------------------------------------------------------------------------
   onSnap(m) {
+    const arrival = performance.now();
+    if (this.lastSnapAt) {
+      const gap = arrival - this.lastSnapAt;
+      this.snapJitter = this.snapJitter * 0.9 + Math.abs(gap - 1000 / CONFIG.TICK_RATE) * 0.1;
+      const target = S.clamp(1000 / CONFIG.TICK_RATE * 2 + this.snapJitter * 3, 70, 260);
+      this.interpDelay += (target - this.interpDelay) * 0.05;
+    }
+    this.lastSnapAt = arrival;
+    // grenades in flight
+    const liveIds = new Set();
+    if (m.g) for (const [id, ty, x, y, z] of m.g) {
+      liveIds.add(id);
+      let v = this.nadesView.get(id);
+      if (!v) { v = { ty, buf: [] }; this.nadesView.set(id, v); }
+      v.buf.push({ t: m.t, x, y, z });
+      if (v.buf.length > 8) v.buf.shift();
+    }
+    for (const id of [...this.nadesView.keys()]) if (!liveIds.has(id)) this.nadesView.delete(id);
+    this.smokes = m.sm ? m.sm.map(([id, x, y, z, t0]) => ({ id, x, y, z, t0 })) : [];
     this.phase = m.ph; this.phaseEnd = m.pe; this.round = m.rd; this.score = m.sc; this.bombState = m.b;
     if (m.r) this.hud.setRoster(m.r);
     const y = m.y;
@@ -392,7 +512,7 @@ class Game {
     }
     const ws = y.wp[this.slot];
     if (!ws) { this.slot = y.sl; }
-    const curId = y.wp[this.slot] ? y.wp[this.slot][0] : 'knife';
+    const curId = this.curWeaponId();
     if (this.vm.weaponId !== curId) { this.vm.setWeapon(curId); this.drawUntil = now + y.dr; this.scoped = 0; }
     this.unacked = this.unacked.filter((u) => u.seq > y.ss && now - u.t < 500);
     if (y.rl > 0 && !(this.reloadUntil > now)) {
@@ -443,24 +563,28 @@ class Game {
   }
 
   moveOpts() {
-    const ws = this.you && this.you.wp[this.slot];
     const usingUse = !!(this.input.buttons() & BTN.USE);
     const busy = usingUse && ((this.you && this.you.pl > 0) || (this.myPub && this.myPub.df));
-    return { speedMul: S.weaponSpeedMul(ws ? ws[0] : 'knife', this.scoped > 0), frozen: this.phase === 'freeze' || this.phase === 'gameover' || busy };
+    return { speedMul: S.weaponSpeedMul(this.curWeaponId(), this.scoped > 0), frozen: this.phase === 'freeze' || this.phase === 'gameover' || busy };
   }
 
   // -------------------------------------------------------------------------
   // WEAPONS (client side prediction of actions)
   // -------------------------------------------------------------------------
-  curWeaponId() { const ws = this.you && this.you.wp[this.slot]; return ws ? ws[0] : 'knife'; }
+  curWeaponId() { const ws = this.you && this.you.wp[this.slot]; return ws && WEAPONS[ws[0]] ? ws[0] : 'knife'; }
   ammoDisplay() {
     const ws = this.you && this.you.wp[this.slot];
     if (!ws) return [0, 0];
+    if (this.slot === 4) return [ws[1], 0];
     return [Math.max(0, ws[1] - this.unacked.length), ws[2]];
   }
   switchTo(slot) {
     if (!this.inGame || !this.alive || !this.you) return;
-    if (!this.you.wp[slot] || slot === this.slot) return;
+    if (!this.you.wp[slot]) return;
+    if (slot === this.slot) {
+      if (slot === 4) { this.net.emit('switch', 4); this.sfx.draw(); }   // cycle grenade type
+      return;
+    }
     this.prevSlot = this.slot;
     this.slot = slot;
     this.lastSwitchLocal = performance.now();
@@ -475,10 +599,10 @@ class Game {
   }
   cycleWeapon(dir) {
     if (!this.you) return;
-    const order = [1, 2, 3];
+    const order = [1, 2, 3, 4];
     let i = order.indexOf(this.slot);
-    for (let k = 0; k < 3; k++) {
-      i = (i + dir + 3) % 3;
+    for (let k = 0; k < 4; k++) {
+      i = (i + dir + 4) % 4;
       if (this.you.wp[order[i]]) { this.switchTo(order[i]); return; }
     }
   }
@@ -498,6 +622,7 @@ class Game {
   toggleScope() {
     if (!this.inGame || !this.alive) return;
     const w = WEAPONS[this.curWeaponId()];
+    if (w.grenade) { this.throwGrenade(performance.now(), true); return; }
     if (!w.scope || this.reloadUntil > performance.now()) return;
     this.scoped = (this.scoped + 1) % (w.scope.length + 1);
     this.scopeAt = performance.now();
@@ -511,6 +636,7 @@ class Game {
     const id = this.curWeaponId(), w = WEAPONS[id];
     if (!w.auto && this.triggerHeld) return;
     if (!['live', 'warmup', 'post'].includes(this.phase)) return;
+    if (w.grenade) { this.triggerHeld = true; this.throwGrenade(now, false); return; }
     if (now < this.drawUntil || this.reloadUntil > now) return;
     const [ammo] = this.ammoDisplay();
     if (!w.melee && ammo <= 0) {
@@ -523,14 +649,25 @@ class Game {
     this.fireShot(now, w);
   }
 
+  throwGrenade(now, lob) {
+    if (!this.alive || now < this.drawUntil || now - this.lastFireLocal < 700) return;
+    if (!['live', 'warmup', 'post'].includes(this.phase)) return;
+    const seq = ++this.shotSeq;
+    this.net.emit('shoot', { seq, yaw: +this.yaw.toFixed(5), pitch: +this.pitch.toFixed(5), t: Math.round(this.net.serverNow()), lob: lob ? 1 : 0 });
+    this.lastFireLocal = now;
+    this.vm.throwNade();
+    this.sfx.throwNade(null);
+    this.drawUntil = now + 700;
+  }
+
   fireShot(now, w) {
     const idx = S.recoilIndexAt(this.recoilIdx, now - this.lastFireLocal, w);
     const speed = Math.hypot(this.me.vx, this.me.vz);
     const spread = S.getSpread(w, speed, this.me.onGround, this.me.crouch, this.scoped > 0);
     const recoil = w.melee ? [0, 0] : S.getRecoil(w, idx);
     const seq = ++this.shotSeq;
-    const dir = S.computeShotDirection(this.yaw, this.pitch, recoil, spread, S.shotSeed(this.myNum, seq));
-    const renderT = this.net.serverNow() - CONFIG.INTERP_DELAY_MS;
+    const dirs = S.shotDirections(w, this.yaw, this.pitch, recoil, spread, this.myNum, seq);
+    const renderT = this.net.serverNow() - this.interpDelay;
     this.net.emit('shoot', { seq, yaw: +this.yaw.toFixed(5), pitch: +this.pitch.toFixed(5), ri: +idx.toFixed(3), t: Math.round(renderT) });
     this.recoilIdx = idx + 1;
     this.lastFireLocal = now;
@@ -541,21 +678,19 @@ class Game {
       this.punch[1] += w.kick * 0.35 * S.DEG;
       this.punch[0] += (Math.random() - 0.5) * w.kick * 0.3 * S.DEG;
     }
-    // local impact prediction
+    // local impact prediction (every pellet)
     const eye = [this.me.x, this.me.y + this.eyeH, this.me.z];
-    const hit = this.world.raycast(eye, dir, w.range);
-    let end = hit ? [eye[0] + dir[0] * hit.t, eye[1] + dir[1] * hit.t, eye[2] + dir[2] * hit.t] : [eye[0] + dir[0] * w.range, eye[1] + dir[1] * w.range, eye[2] + dir[2] * w.range];
-    // check predicted player hit (for blood + stop tracer)
-    const renderPlayerHit = this.predictPlayerHit(eye, dir, hit ? hit.t : w.range);
-    if (renderPlayerHit) {
-      end = renderPlayerHit.point;
-      this.fx.blood(end, dir);
-    } else if (hit && (!w.melee || hit.t < w.range)) {
-      this.fx.impact(end, hit.normal, hit.type);
+    const mz = this.cameraPoint(0.17, -0.11, -0.75);
+    for (const dir of dirs) {
+      const hit = this.world.raycast(eye, dir, w.range);
+      let end = hit ? [eye[0] + dir[0] * hit.t, eye[1] + dir[1] * hit.t, eye[2] + dir[2] * hit.t] : [eye[0] + dir[0] * w.range, eye[1] + dir[1] * w.range, eye[2] + dir[2] * w.range];
+      const renderPlayerHit = this.predictPlayerHit(eye, dir, hit ? hit.t : w.range);
+      if (renderPlayerHit) { end = renderPlayerHit.point; this.fx.blood(end, dir); }
+      else if (hit) this.fx.impact(end, hit.normal, hit.type);
+      if (!w.melee && (w.pellets <= 1 || Math.random() < 0.5)) this.fx.tracer(mz, end);
     }
+    if (w.id === 'breacher') this.sfx.pump();
     if (!w.melee) {
-      const mz = this.cameraPoint(0.17, -0.11, -0.75);
-      this.fx.tracer(mz, end);
       this.fx.light(mz[0], mz[1], mz[2], 1.6, [1, 0.75, 0.4], 30);
       const right = this.cameraDir(1, 0, 0), up = this.cameraDir(0, 1, 0), fwd = this.cameraDir(0, 0, -1);
       if (w.id !== 'longshot') this.fx.shell(this.cameraPoint(0.14, -0.08, -0.35), right, up, fwd);
@@ -593,15 +728,17 @@ class Game {
       if (mz && Math.hypot(mz[0] - m.o[0], mz[2] - m.o[2]) < 2) origin = mz;
     }
     const w = WEAPONS[m.w];
-    if (w && !w.melee) {
-      this.fx.tracer(origin, m.e, [1, 0.8, 0.45]);
-      this.fx.light(origin[0], origin[1], origin[2], 1.4, [1, 0.75, 0.4], 30);
-    }
-    if (m.hp) {
-      const d = [m.e[0] - m.o[0], m.e[1] - m.o[1], m.e[2] - m.o[2]];
-      const l = Math.hypot(d[0], d[1], d[2]) || 1;
-      this.fx.blood(m.e, [d[0] / l, d[1] / l, d[2] / l]);
-    } else if (m.n) this.fx.impact(m.e, m.n, m.bt);
+    const ends = Array.isArray(m.e[0]) ? m.e : [m.e];
+    if (w && !w.melee) this.fx.light(origin[0], origin[1], origin[2], 1.4, [1, 0.75, 0.4], 30);
+    ends.forEach((e, i) => {
+      if (w && !w.melee && (ends.length === 1 || i % 2 === 0)) this.fx.tracer(origin, e, [1, 0.8, 0.45]);
+      if (m.hp) {
+        const d = [e[0] - m.o[0], e[1] - m.o[1], e[2] - m.o[2]];
+        const l = Math.hypot(d[0], d[1], d[2]) || 1;
+        if (i === 0) this.fx.blood(e, [d[0] / l, d[1] / l, d[2] / l]);
+      } else if (m.n && i < 3) this.fx.impact(e, m.n, m.bt);
+    });
+    if (r && r.state) this.seenEnemy.set(m.i, performance.now());
     this.sfx.shot(m.w, origin);
   }
 
@@ -640,6 +777,7 @@ class Game {
   }
 
   updateMenu(dt) {
+    this.adaptResolution(dt);
     this.menuCam += dt * 0.06;
     const r = 30;
     this.camPos = [32 + Math.cos(this.menuCam) * r, 18, 32 + Math.sin(this.menuCam) * r];
@@ -648,11 +786,27 @@ class Game {
     const a = S.dirToAngles([d[0] / l, d[1] / l, d[2] / l]);
     this.camYaw = a.yaw; this.camPitch = a.pitch; this.camRoll = 0;
     this.fov = 70;
-    this.worldR.update(4);
+    this.worldR.update(16, 12);
     this.fx.update(dt);
   }
 
+  adaptResolution(dt) {
+    if (this.minRatio >= this.maxRatio) return;
+    this.frameTimes.push(dt);
+    if (this.frameTimes.length > 90) this.frameTimes.shift();
+    const now = performance.now();
+    if (now - this.lastScaleCheck < 1500 || this.frameTimes.length < 60) return;
+    this.lastScaleCheck = now;
+    const sorted = this.frameTimes.slice().sort((a, b) => a - b);
+    const p80 = sorted[Math.floor(sorted.length * 0.8)] * 1000;
+    let r = this.renderer.pixelRatio;
+    if (p80 > 19) r = Math.max(this.minRatio, r * 0.85);
+    else if (p80 < 13 && r < this.maxRatio) r = Math.min(this.maxRatio, r * 1.08);
+    if (Math.abs(r - this.renderer.pixelRatio) > 0.01) { this.renderer.setPixelRatio(r); this.frameTimes.length = 0; }
+  }
+
   updateGame(dt, nowMs) {
+    this.adaptResolution(dt);
     const now = performance.now();
     const I = this.input;
     // --- look
@@ -686,7 +840,7 @@ class Game {
 
     // --- recoil camera
     let target = [0, 0];
-    if (!w.melee) target = S.getRecoil(w, S.recoilIndexAt(this.recoilIdx, now - this.lastFireLocal, w));
+    if (!w.melee && !w.grenade) target = S.getRecoil(w, S.recoilIndexAt(this.recoilIdx, now - this.lastFireLocal, w));
     const rk = 1 - Math.exp(-dt * 35);
     this.recoilView[0] += (target[0] - this.recoilView[0]) * rk;
     this.recoilView[1] += (target[1] - this.recoilView[1]) * rk;
@@ -695,7 +849,8 @@ class Game {
 
     // --- remote interpolation
     const serverNow = this.net.serverNow();
-    const renderT = serverNow - CONFIG.INTERP_DELAY_MS;
+    const renderT = serverNow - this.interpDelay;
+    this.renderT = renderT;
     for (const [id, r] of this.remotes) this.updateRemote(r, renderT, dt, id);
 
     // --- camera
@@ -746,7 +901,8 @@ class Game {
       if (this.phase === 'warmup' && this.myTeam !== 'SPEC') spec = (spec || '') + ' · Isınmada yeniden doğacaksın';
     }
     this.fov = this.alive ? fov : 78;
-    this.worldR.update(isTouch ? 2 : 4);
+    this.worldR.focus = this.camPos;
+    this.worldR.update(16, isTouch ? 3 : 5);
     this.fx.update(dt);
 
     // --- view model
@@ -771,11 +927,20 @@ class Game {
     // --- HUD
     const [ammo, reserve] = this.ammoDisplay();
     const spreadDeg = this.alive ? S.getSpread(w, speed, this.me.onGround, this.me.crouch, this.scoped > 0) : 0;
-    const recoilSpread = w.melee ? 0 : S.recoilIndexAt(this.recoilIdx, now - this.lastFireLocal, w) * 0.15;
+    const recoilSpread = w.melee || w.grenade ? 0 : S.recoilIndexAt(this.recoilIdx, now - this.lastFireLocal, w) * 0.15;
     const pxPerDeg = this.canvas.clientHeight / fov;
-    let aliveT = 0, aliveCT = 0;
-    for (const r of this.remotes.values()) if (r.state && r.state.alive) { if (r.team === 'T') aliveT++; else aliveCT++; }
+    let aliveT = 0, aliveCT = 0, totalT = 0, totalCT = 0;
+    for (const r of this.remotes.values()) {
+      if (r.team === 'T') totalT++; else totalCT++;
+      if (r.state && r.state.alive) { if (r.team === 'T') aliveT++; else aliveCT++; }
+    }
+    if (this.myTeam === 'T') totalT++; else if (this.myTeam === 'CT') totalCT++;
     if (this.alive) { if (this.myTeam === 'T') aliveT++; else if (this.myTeam === 'CT') aliveCT++; }
+    // flash blindness (full white, then fades out over the last 60%)
+    const flashLeft = this.flashUntil - now;
+    const flash = flashLeft > 0 ? Math.min(1, flashLeft / (this.flashDur * 0.6)) : 0;
+    // radar (20 Hz)
+    if (now - this.lastRadar > 50) { this.lastRadar = now; this.updateRadar(now); }
     let progress = null;
     if (this.you && this.you.pl > 0) progress = { label: 'BOMBA KURULUYOR...', f: this.you.pl };
     else if (b && b.dp && this.myPub && this.myPub.df) progress = { label: 'BOMBA İMHA EDİLİYOR...', f: b.dp };
@@ -784,11 +949,42 @@ class Game {
       ammo, reserve, weaponId: this.curWeaponId(), slots: this.you ? this.you.wp : {}, slot: this.slot,
       spreadPx: Math.min(60, (spreadDeg + recoilSpread) * pxPerDeg), scoped: this.alive && this.scoped > 0,
       showCrosshair: this.alive, bomb: b, myTeam: this.myTeam,
-      iCarryBomb: !!(b && b.s === 'carried' && b.c === this.myId), aliveT, aliveCT, progress, spec: this.alive ? null : spec
+      iCarryBomb: !!(b && b.s === 'carried' && b.c === this.myId), aliveT, aliveCT, totalT, totalCT, progress, flash,
+      spec: this.alive ? null : spec
     });
     if (this.showStats) {
-      this.hud.stats(`FPS ${this.fps}  ping ${Math.round(this.net.rtt)}ms\ndraws ${this.renderer.stats.draws} inst ${this.renderer.stats.instances} tris ${Math.round(this.renderer.stats.tris)}\npos ${this.me.x.toFixed(1)} ${this.me.y.toFixed(1)} ${this.me.z.toFixed(1)}  pending ${this.pending.length}`);
+      this.hud.stats(`FPS ${this.fps}  ping ${Math.round(this.net.rtt)} ms  interp ${Math.round(this.interpDelay)} ms\nçözünürlük x${this.renderer.pixelRatio.toFixed(2)}  draws ${this.renderer.stats.draws}  inst ${this.renderer.stats.instances}\nüçgen ${Math.round(this.renderer.stats.tris)}  pos ${this.me.x.toFixed(1)} ${this.me.z.toFixed(1)}`);
     }
+  }
+
+  updateRadar(now) {
+    const dots = [];
+    const eye = this.camPos || [32, 2, 32];
+    this.radarCenter = this.alive ? [this.me.x, this.me.z] : [eye[0], eye[2]];
+    for (const [id, r] of this.remotes) {
+      if (!r.state) continue;
+      const s = r.state;
+      const friendly = r.team === this.myTeam || this.myTeam === 'SPEC';
+      let show = friendly;
+      if (!friendly && s.alive) {
+        // enemies appear when you (or the server-told shot) can see them
+        const visible = S.lineClear(this.world, eye, [s.x, s.y + 1.4, s.z]) && !S.smokeBlocks(this.smokes, eye, [s.x, s.y + 1.4, s.z], this.net.serverNow());
+        if (visible) this.seenEnemy.set(id, now);
+        show = now - (this.seenEnemy.get(id) || -1e9) < 1500;
+      }
+      if (!show) continue;
+      dots.push({ x: s.x, z: s.z, color: r.team === 'T' ? '#f0a640' : '#5fb0ff', dead: !s.alive });
+    }
+    this.radarDots = dots;
+    const b = this.bombState;
+    this.radarBomb = null;
+    if (b && (b.s === 'planted' || (b.s === 'dropped' && this.myTeam === 'T'))) this.radarBomb = [b.x, b.z];
+    else if (b && b.s === 'carried' && this.myTeam === 'T') {
+      const r = this.remotes.get(b.c);
+      if (r && r.state) this.radarBomb = [r.state.x, r.state.z];
+      else if (b.c === this.myId) this.radarBomb = [this.me.x, this.me.z];
+    }
+    this.hud.drawRadar(this, this.radarImg);
   }
 
   simStep() {
@@ -850,6 +1046,7 @@ class Game {
     M4.multiply(this.vp, this.proj, this.view);
     R.setLights(this.fx.activeLights(pos));
     R.beginFrame();
+    R.drawSky(this.vp, pos);
     R.setBlend('none');
     this.worldR.draw(this.vp, pos);
 
@@ -861,8 +1058,20 @@ class Game {
       c.x += dt * 0.6; if (c.x > 130) c.x = -70;
       O.pushAABB(c.x, c.y, c.z, c.sx, 2, c.sz, 0.97, 0.98, 1, 1, 1);
     }
-    const sun = R.sun;
-    O.pushAABB(pos[0] + sun[0] * 160, pos[1] + sun[1] * 160, pos[2] + sun[2] * 160, 12, 12, 12, 1, 0.95, 0.72, 1, 1);
+    // grenades in flight (interpolated)
+    const rt = this.renderT || 0;
+    for (const v of this.nadesView.values()) {
+      const buf = v.buf;
+      let a = buf[0], bb = buf[buf.length - 1];
+      for (let i = buf.length - 1; i > 0; i--) if (buf[i - 1].t <= rt) { a = buf[i - 1]; bb = buf[i]; break; }
+      const f = bb.t > a.t ? S.clamp((rt - a.t) / (bb.t - a.t), 0, 1.5) : 1;
+      const model = this.nadeModels[v.ty];
+      model.root.pos = [S.lerp(a.x, bb.x, f), S.lerp(a.y, bb.y, f), S.lerp(a.z, bb.z, f)];
+      model.root.rot = [performance.now() / 90, performance.now() / 130, 0];
+      model.root.scl = [1.4, 1.4, 1.4];
+      model.root.update(null);
+      model.root.render(O);
+    }
     // avatars
     const me = this.myId;
     for (const [id, r] of this.remotes) {
@@ -890,6 +1099,7 @@ class Game {
       }
     }
     this.fx.render(O, A, D);
+    if (this.smokes.length && this.net) this.fx.renderSmokes(A, this.smokes, this.net.serverNow());
 
     R.useBoxes(this.vp, pos);
     R.setBlend('none'); O.draw(R);

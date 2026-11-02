@@ -6,8 +6,18 @@
 ```
 npm install
 npm start              # http://localhost:3000
-npm test               # 14 otomatik test (fizik, isabet, ekonomi, bomba, tam bot maçı)
+npm test               # 24 otomatik test (fizik, isabet, ekonomi, bomba, haritalar, bombalar, zorluk, her haritada tam bot maçı)
 ```
+
+### v2.0 yenilikleri
+- **3 harita:** Dustgrid (çöl), Harbor (liman, kapalı depo B bölgesi), Frostbite (karlı köy, mağara geçidi). Her maç sonunda sıradaki haritaya geçilir.
+- **Kolay / Orta / Zor:** Botların tepki süresi, nişan hatası, sprey kontrolü, görüş açısı + başlangıç parası, kayıp bonusu ve botların insana verdiği hasar değişir.
+- **20 silah/bomba:** 4 tabanca, 3 SMG, 2 pompalı, 1 makineli tüfek, 4 tüfek, 2 keskin nişancı, bıçak, HE / flaş / sis bombası.
+- **Daha hızlı ve akıcı hareket** (koşu 5.6 → 6.7 m/sn, daha çevik ivmelenme).
+- **Performans:** FPS'e göre otomatik çözünürlük, zaman bütçeli chunk inşası, jitter'a göre ayarlanan interpolasyon, sunucuda gerçek zamanlı hareket bütçesi (yavaş sunucuda bile doğru hız), botlar 15 Hz düşünür, Render bölgesi Frankfurt.
+- **Görsel:** gökyüzü gradyanı + güneş, voxel ışın izlemeli güneş gölgeleri, temaya göre sis/ışık, voxel sis bulutları, patlama/flaş efektleri.
+- **Arayüz:** yeni menü (harita kartları, zorluk seçici, sekmeler), dönen radar, modelden üretilen silah ikonları (market, killfeed, HUD), maç sonu istatistik ekranı.
+- **Botlar:** A* yol bulma (her haritada otomatik), flaş/sise tepki, HE atma, son görülen düşmanı avlama.
 
 Tarayıcıda aç → **HIZLI OYNA**. "Bot Sayısı = 9" ile tek başına tam 5v5 oynayabilirsin. Oda kodunu arkadaşlarına ver, aynı odaya girsinler (botlar insanlara otomatik yer açar).
 

@@ -1,64 +1,23 @@
 'use strict';
 /*
  * BotBrain — server-side AI that produces the SAME input stream a human client sends
- * (so bots obey identical physics, fire-rate, recoil and lag-comp rules).
- * Waypoint-graph navigation (Dijkstra), line-of-sight target acquisition with human-like
- * reaction time, aim error, burst control with partial recoil compensation,
- * bomb planting / defusing / pickup and a basic buy logic.
+ * (identical physics, fire-rate, recoil and lag-comp rules apply).
+ * - A* navigation on the map's walk grid (works on every map, re-plans when walls break)
+ * - Difficulty-driven skill: reaction time, aim error, turn speed, head-shot rate,
+ *   spray control, burst length, field of view, spotting distance
+ * - Respects flash blindness and smoke clouds; throws HE grenades at enemies
+ * - Bomb logic: carry/plant, pick up dropped bomb, retake & defuse, guard planted bomb
+ * - Buy logic scaled to economy
  */
 const S = require('../shared/shared.js');
-const { CONFIG, WEAPONS, MAP, BTN } = S;
-
-const NODES = MAP.waypoints;
-const ADJ = {};
-for (const k of Object.keys(NODES)) ADJ[k] = [];
-for (const [a, b] of MAP.edges) { ADJ[a].push(b); ADJ[b].push(a); }
-
-function nodeDist(a, b) { return Math.hypot(NODES[a][0] - NODES[b][0], NODES[a][1] - NODES[b][1]); }
-
-function shortestPath(from, to) {
-  if (from === to) return [to];
-  const dist = {}, prev = {}, open = new Set(Object.keys(NODES));
-  for (const k of open) dist[k] = Infinity;
-  dist[from] = 0;
-  while (open.size) {
-    let u = null;
-    for (const k of open) if (u === null || dist[k] < dist[u]) u = k;
-    if (u === null || dist[u] === Infinity) break;
-    open.delete(u);
-    if (u === to) break;
-    for (const v of ADJ[u]) {
-      const alt = dist[u] + nodeDist(u, v) * (0.85 + Math.random() * 0.3);
-      if (alt < dist[v]) { dist[v] = alt; prev[v] = u; }
-    }
-  }
-  const path = [];
-  let c = to;
-  while (c) { path.unshift(c); if (c === from) break; c = prev[c]; }
-  return path[0] === from ? path : [to];
-}
-
-function nearestNode(x, z, world, y) {
-  let best = null, bd = Infinity;
-  for (const [k, [nx, nz]] of Object.entries(NODES)) {
-    const d = Math.hypot(nx - x, nz - z);
-    if (d >= bd) continue;
-    // prefer nodes with line of sight
-    const eye = [x, (y || 1) + 1.5, z];
-    const dir = [nx - x, 0, nz - z];
-    const len = Math.hypot(dir[0], dir[2]) || 1;
-    const hit = world.raycast(eye, [dir[0] / len, 0, dir[2] / len], len);
-    const penalty = hit ? 30 : 0;
-    if (d + penalty < bd) { bd = d + penalty; best = k; }
-  }
-  return best;
-}
+const { CONFIG, WEAPONS, BTN } = S;
 
 function approachAngle(cur, target, maxStep) {
   const d = S.wrapAngle(target - cur);
   if (Math.abs(d) <= maxStep) return target;
   return cur + Math.sign(d) * maxStep;
 }
+const rand = (a, b) => a + Math.random() * (b - a);
 
 class BotBrain {
   constructor(room, player) {
@@ -67,7 +26,7 @@ class BotBrain {
     this.seq = 0;
     this.shotSeq = 0;
     this.path = [];
-    this.goal = null;
+    this.goalKey = null;
     this.target = null;
     this.reactAt = 0;
     this.aimErr = [0, 0];
@@ -79,70 +38,79 @@ class BotBrain {
     this.stuckPos = [0, 0];
     this.unstickUntil = 0;
     this.unstickDir = 1;
-    this.lookAround = 0;
-    this.skill = 0.55 + Math.random() * 0.35;
+    this.lookAround = Math.random() * 6;
+    this.jitter = Math.random() * 0.2 - 0.1;   // per-bot personality
     this.lastThreat = null;
     this.lastThreatTime = 0;
+    this.lastSeenPos = null;
+    this.lastSeenTime = 0;
     this.bought = false;
+    this.nadeCooldown = 0;
   }
+
+  get skill() { return this.room.diff.bot; }
 
   onSpawn() {
     this.path = [];
-    this.goal = null;
     this.goalKey = null;
     this.target = null;
-    this.defendSite = null;
+    this.defendSpot = null;
     this.stuckCount = 0;
+    this.lastSeenPos = null;
   }
 
   onRoundStart() {
     this.onSpawn();
     this.bought = false;
-    this.buyAt = this.room.now() + 1500 + Math.random() * 3000;
+    this.buyAt = this.room.now() + 800 + Math.random() * 3000;
   }
 
   onDamaged(attacker) {
     this.lastThreat = attacker.id;
     this.lastThreatTime = this.room.now();
+    this.lastSeenPos = [attacker.x, attacker.z];
+    this.lastSeenTime = this.room.now();
   }
 
   buy() {
     const p = this.p, room = this.room;
     this.bought = true;
-    const rifle = p.team === 'T' ? 'krait' : 'sentinel';
-    const has1 = p.weapons[1];
-    if (!has1) {
-      if (p.money >= WEAPONS[rifle].price + 650) room.onBuy(p, rifle);
-      else if (p.money >= 4750 + 1000 && Math.random() < 0.15) room.onBuy(p, 'longshot');
-      else if (p.money >= WEAPONS.viper.price + 650 && room.round !== 1) room.onBuy(p, 'viper');
+    const m = () => p.money;
+    const rifle = p.team === 'T' ? (Math.random() < 0.75 ? 'krait' : 'falcon') : (Math.random() < 0.75 ? 'sentinel' : 'lynx');
+    if (!p.weapons[1]) {
+      if (m() >= 4750 + 1000 && Math.random() < 0.15) room.onBuy(p, 'longshot');
+      else if (m() >= WEAPONS[rifle].price + 650) room.onBuy(p, rifle);
+      else if (m() >= 2350 + 650 && Math.random() < 0.3) room.onBuy(p, 'hornet');
+      else if (m() >= 1250 + 650 && room.round !== 1) room.onBuy(p, ['viper', 'wasp', 'breacher'][Math.floor(Math.random() * 3)]);
+      else if (m() >= 1700 && Math.random() < 0.15) room.onBuy(p, 'ranger');
     }
     if (p.armor < 100 || !p.helmet) {
-      if (p.money >= 1000) room.onBuy(p, 'helmet');
-      else if (p.money >= 650 && p.armor < 100) room.onBuy(p, 'kevlar');
+      if (m() >= 1000) room.onBuy(p, 'helmet');
+      else if (m() >= 650 && p.armor < 100) room.onBuy(p, 'kevlar');
     }
-    if (p.team === 'CT' && !p.kit && p.money >= 400 && Math.random() < 0.6) room.onBuy(p, 'defuse');
-    if (!p.weapons[1] && p.money >= 700 && room.round > 1 && Math.random() < 0.5) room.onBuy(p, 'hc50');
-    // equip best
-    if (p.weapons[1]) room.switchSlot(p, 1);
-    else room.switchSlot(p, 2);
+    if (p.team === 'CT' && !p.kit && m() >= 400 && Math.random() < 0.6) room.onBuy(p, 'defuse');
+    if (m() >= 300 && Math.random() < 0.6) room.onBuy(p, 'he');
+    if (m() >= 200 && Math.random() < 0.4) room.onBuy(p, 'flash');
+    if (!p.weapons[1] && m() >= 700 && room.round > 1 && Math.random() < 0.5) room.onBuy(p, Math.random() < 0.5 ? 'hc50' : 'vex');
+    room.switchSlot(p, p.weapons[1] ? 1 : 2, true);
   }
 
   eye(q) { return [q.x, q.y + S.eyeHeight(q), q.z]; }
 
-  canSee(from, q) {
+  canSee(from, q, now) {
     const pts = [[q.x, q.y + S.playerHeight(q) - 0.2, q.z], [q.x, q.y + S.playerHeight(q) * 0.6, q.z]];
     for (const t of pts) {
       const d = [t[0] - from[0], t[1] - from[1], t[2] - from[2]];
       const len = Math.hypot(d[0], d[1], d[2]);
-      if (len > 60) return false;
-      const dir = [d[0] / len, d[1] / len, d[2] / len];
-      if (!this.room.world.raycast(from, dir, len)) return { point: t, dist: len };
+      if (len > this.skill.spot) return false;
+      if (S.lineClear(this.room.world, from, t) && !S.smokeBlocks(this.room.smokes, from, t, now)) return { point: t, dist: len };
     }
     return false;
   }
 
   findTarget(now) {
     const p = this.p;
+    if (now < p.blindUntil) return null;
     const eye = this.eye(p);
     const fwd = S.anglesToDir(p.yaw, 0);
     let best = null;
@@ -152,173 +120,197 @@ class BotBrain {
       const hd = Math.hypot(dx, dz) || 1;
       const facing = (fwd[0] * dx + fwd[2] * dz) / hd;
       const threatened = this.lastThreat === q.id && now - this.lastThreatTime < 2500;
-      if (facing < -0.2 && !threatened && !(this.target && this.target.id === q.id)) continue;
-      const vis = this.canSee(eye, q);
+      if (facing < this.skill.fovDot && !threatened && !(this.target && this.target.id === q.id)) continue;
+      const vis = this.canSee(eye, q, now);
       if (!vis) continue;
       if (!best || vis.dist < best.dist) best = { q, dist: vis.dist, point: vis.point };
     }
     return best;
   }
 
-  think(now) {
+  /** ticks = how many server ticks until next think (inputs are emitted to cover them) */
+  think(now, ticks) {
     const p = this.p, room = this.room;
     if (!p.alive) return;
+    const sk = this.skill;
+    const dt = ticks / CONFIG.TICK_RATE;
     let mx = 0, mz = 0, b = 0;
     let yaw = p.yaw, pitch = p.pitch;
-    const dt = 1 / CONFIG.TICK_RATE;
 
     if (room.phase === 'freeze' || room.phase === 'warmup' || room.phase === 'live') {
       if (!this.bought && now >= (this.buyAt || 0) && room.canBuy(p)) this.buy();
     }
     if (room.phase === 'freeze' || room.phase === 'gameover') {
-      this.emitInputs(0, 0, yaw, pitch, 0);
+      this.emitInputs(0, 0, yaw, pitch, 0, ticks);
       return;
     }
+    const blind = now < p.blindUntil;
 
     // ammo management
-    const ws = p.weapons[p.slot];
-    if (ws) {
-      const w = WEAPONS[ws.id];
-      if (!w.melee && ws.ammo === 0) {
-        if (ws.reserve > 0) room.onReload(p);
-        else if (p.slot === 1 && p.weapons[2]) room.switchSlot(p, 2);
-        else room.switchSlot(p, 3);
+    if (p.slot !== 4) {
+      const ws = p.weapons[p.slot];
+      if (ws) {
+        const w = WEAPONS[ws.id];
+        if (!w.melee && ws.ammo === 0) {
+          if (ws.reserve > 0) room.onReload(p);
+          else if (p.slot === 1 && p.weapons[2]) room.switchSlot(p, 2);
+          else room.switchSlot(p, 3);
+        }
       }
-    }
+    } else if (!room.nadeCount(p)) room.switchSlot(p, p.weapons[1] ? 1 : 2, true);
 
-    const seen = this.findTarget(now);
+    const seen = blind ? null : this.findTarget(now);
     if (seen) {
       const q = seen.q;
+      this.lastSeenPos = [q.x, q.z];
+      this.lastSeenTime = now;
       if (!this.target || this.target.id !== q.id) {
         this.target = q;
-        this.reactAt = now + (420 - this.skill * 220) + Math.random() * 180;
-        const err = (1.2 - this.skill) * 0.22;
-        this.aimErr = [(Math.random() - 0.5) * err, (Math.random() - 0.5) * err * 0.6];
-        this.aimHead = Math.random() < this.skill * 0.3;
+        this.reactAt = now + rand(sk.react[0], sk.react[1]);
+        this.aimErr = [(Math.random() - 0.5) * sk.aimErr * 2, (Math.random() - 0.5) * sk.aimErr];
+        this.aimHead = Math.random() < sk.head;
+      }
+      // HE grenade at medium range
+      if (room.nadeCount(p) && p.nades.he > 0 && seen.dist > 9 && seen.dist < 24 && now > this.nadeCooldown && Math.random() < 0.04 * sk.smart) {
+        this.nadeCooldown = now + 8000;
+        if (p.slot !== 4) { p.nadeSel = 'he'; room.switchSlot(p, 4, true); }
       }
       const eye = this.eye(p);
-      const tp = this.aimHead ? [q.x, q.y + S.playerHeight(q) - 0.2, q.z] : [q.x, q.y + S.playerHeight(q) * 0.62, q.z];
+      const tp = this.aimHead ? [q.x, q.y + S.playerHeight(q) - 0.2, q.z] : [q.x, q.y + S.playerHeight(q) * (0.46 + Math.random() * 0.08), q.z];
       const d = [tp[0] - eye[0], tp[1] - eye[1], tp[2] - eye[2]];
       const len = Math.hypot(d[0], d[1], d[2]) || 1;
       const ang = S.dirToAngles([d[0] / len, d[1] / len, d[2] / len]);
-      const turn = (4.5 + this.skill * 5) * dt;
+      if (p.slot === 4) ang.pitch += 0.12 + seen.dist * 0.006; // lob arc
+      const turn = (sk.turn + this.jitter * 2) * dt;
       yaw = approachAngle(p.yaw, ang.yaw + this.aimErr[0], turn);
       pitch = S.clamp(p.pitch + S.clamp(ang.pitch + this.aimErr[1] - p.pitch, -turn, turn), -1.4, 1.4);
-      this.aimErr[0] *= 0.93; this.aimErr[1] *= 0.93;
+      const decay = Math.pow(0.9, ticks);
+      this.aimErr[0] *= decay; this.aimErr[1] *= decay;
       const err = Math.abs(S.wrapAngle(ang.yaw - yaw)) + Math.abs(ang.pitch - pitch);
 
-      // movement during fight: strafe between bursts, stand still while shooting
-      if (now > this.strafeUntil) { this.strafeDir = Math.random() < 0.5 ? -1 : 1; this.strafeUntil = now + 300 + Math.random() * 700; }
-      const cw = p.weapons[p.slot] ? WEAPONS[p.weapons[p.slot].id] : WEAPONS.knife;
-      if (cw.melee) { mz = 1; }
+      if (now > this.strafeUntil) { this.strafeDir = Math.random() < 0.5 ? -1 : 1; this.strafeUntil = now + rand(300, 900); }
+      const cw = WEAPONS[room.currentWeaponId(p)];
+      if (cw.melee) mz = 1;
       const shooting = now >= this.reactAt && now >= this.burstPauseUntil && err < 0.12 + (cw.melee ? 0.5 : 0);
-      if (!shooting && !cw.melee) mx = this.strafeDir;
-      if (seen.dist > 25 && !cw.melee) b |= BTN.CROUCH * (this.skill > 0.7 ? 1 : 0);
+      if (!shooting && !cw.melee && Math.random() < sk.strafe) mx = this.strafeDir;
+      if (cw.pellets > 1 && seen.dist > 8) mz = 1;                 // shotguns close the gap
+      if (seen.dist > 25 && !cw.melee && sk.smart > 0.7) b |= BTN.CROUCH;
       if (shooting && (!cw.melee || seen.dist < 2.2)) this.fire(now, yaw, pitch);
     } else {
       this.target = null;
-      const nav = this.navigate(now);
+      const nav = this.navigate(now, blind);
       mx = nav.mx; mz = nav.mz; b |= nav.b;
       if (nav.yaw !== undefined) yaw = approachAngle(p.yaw, nav.yaw, 6 * dt);
-      pitch = p.pitch + (0 - p.pitch) * 0.1;
-      // reload when idle
+      pitch = p.pitch + (0 - p.pitch) * 0.2;
+      if (p.slot === 4 && room.nadeCount(p)) room.switchSlot(p, p.weapons[1] ? 1 : 2, true);
       const w2 = p.weapons[p.slot];
-      if (w2 && !WEAPONS[w2.id].melee && w2.ammo < WEAPONS[w2.id].mag * 0.5 && w2.reserve > 0) room.onReload(p);
+      if (p.slot !== 4 && w2 && !WEAPONS[w2.id].melee && w2.ammo < WEAPONS[w2.id].mag * 0.5 && w2.reserve > 0) room.onReload(p);
     }
-    this.emitInputs(mx, mz, yaw, pitch, b);
+    this.emitInputs(mx, mz, yaw, pitch, b, ticks);
   }
 
   fire(now, yaw, pitch) {
-    const p = this.p, room = this.room;
+    const p = this.p, room = this.room, sk = this.skill;
+    if (p.slot === 4) {
+      room.onShoot(p, { seq: ++this.shotSeq, yaw, pitch, t: now });
+      return;
+    }
     const ws = p.weapons[p.slot];
     if (!ws) return;
     const w = WEAPONS[ws.id];
-    const interval = 60000 / w.rpm;
-    if (now - p.lastShot < interval || p.reloadEnd || now < p.drawEnd) return;
+    if (now - p.lastShot < 60000 / w.rpm || p.reloadEnd || now < p.drawEnd) return;
     if (!w.melee && ws.ammo <= 0) return;
-    // partial recoil compensation
     const ri = S.recoilIndexAt(p.recoilIdx, now - p.lastShot, w);
     const rc = S.getRecoil(w, ri);
-    const comp = 0.55 + this.skill * 0.35;
-    const sYaw = yaw + rc[0] * S.DEG * comp;
-    const sPitch = pitch - rc[1] * S.DEG * comp;
-    room.onShoot(p, { seq: ++this.shotSeq, yaw: sYaw, pitch: sPitch, ri, t: now });
+    const comp = sk.comp;
+    room.onShoot(p, { seq: ++this.shotSeq, yaw: yaw + rc[0] * S.DEG * comp, pitch: pitch - rc[1] * S.DEG * comp, ri, t: now });
     this.burst++;
-    const maxBurst = w.auto ? 3 + Math.floor(this.skill * 5) : 1;
+    const maxBurst = w.auto ? Math.round(rand(sk.burst[0], sk.burst[1])) : 1;
     if (this.burst >= maxBurst) {
       this.burst = 0;
-      this.burstPauseUntil = now + (w.auto ? 180 + Math.random() * 220 : 220 + Math.random() * 300);
+      this.burstPauseUntil = now + rand(sk.pause[0], sk.pause[1]) * (w.auto ? 1 : 1.3);
     }
   }
 
-  emitInputs(mx, mz, yaw, pitch, b) {
-    const perTick = CONFIG.INPUT_RATE / CONFIG.TICK_RATE;
-    for (let i = 0; i < perTick; i++) {
-      this.room.queueBotInput(this.p, { seq: ++this.seq, mx, mz, yaw: S.wrapAngle(yaw), pitch, b });
-    }
+  emitInputs(mx, mz, yaw, pitch, b, ticks) {
+    const n = (CONFIG.INPUT_RATE / CONFIG.TICK_RATE) * ticks;
+    for (let i = 0; i < n; i++) this.room.queueBotInput(this.p, { seq: ++this.seq, mx, mz, yaw: S.wrapAngle(yaw), pitch, b });
   }
 
+  // ---------------------------------------------------------------- goals
+  siteSpot(site) {
+    const room = this.room;
+    const c = S.siteCenter(room.map, site);
+    const n = S.nearestWalkable(room.nav, c[0], c[1]);
+    return n ? [n[0] + 0.5, n[1] + 0.5] : c;
+  }
+  randomSpotIn(zone) {
+    const nav = this.room.nav;
+    for (let i = 0; i < 30; i++) {
+      const x = Math.floor(rand(zone.x0, zone.x1 + 1)), z = Math.floor(rand(zone.z0, zone.z1 + 1));
+      if (nav.walk[z * nav.sx + x]) return [x + 0.5, z + 0.5];
+    }
+    return S.siteCenter(this.room.map, 'A');
+  }
   chooseGoal() {
-    const room = this.room, p = this.p, bomb = room.bomb;
+    const room = this.room, p = this.p, bomb = room.bomb, now = room.now();
     if (p.team === 'T') {
-      if (bomb.state === 'dropped') return { pos: [bomb.x, bomb.z], node: null };
-      if (bomb.state === 'planted') return { node: bomb.site === 'A' ? 'ASITE' : 'BSITE', guard: true };
-      return { node: room.botPlan.site === 'A' ? 'ASITE' : 'BSITE', plant: bomb.state === 'carried' && bomb.carrier === p.id };
+      if (bomb.state === 'dropped') return { pos: [bomb.x, bomb.z], key: 'drop' };
+      if (bomb.state === 'planted') {
+        if (!this.defendSpot) this.defendSpot = this.randomSpotIn(room.map.sites[bomb.site]);
+        return { pos: this.defendSpot, key: 'guard' + bomb.site, guard: true };
+      }
+      const carrier = bomb.state === 'carried' && bomb.carrier === p.id;
+      // after a while, hunt the last known enemy position (prevents stalemates)
+      if (!carrier && this.lastSeenPos && now - this.lastSeenTime < 6000 && this.skill.smart > 0.4) return { pos: this.lastSeenPos, key: 'hunt' + Math.round(this.lastSeenPos[0]) + ',' + Math.round(this.lastSeenPos[1]) };
+      return { pos: this.siteSpot(room.botPlan.site), key: 'site' + room.botPlan.site + (carrier ? 'P' : ''), plant: carrier };
     }
-    if (bomb.state === 'planted') return { node: bomb.site === 'A' ? 'ASITE' : 'BSITE', defuse: true, pos: [bomb.x, bomb.z] };
-    if (!this.defendSite) this.defendSite = Math.random() < 0.5 ? 'ASITE' : 'BSITE';
-    return { node: this.defendSite, guard: true };
+    if (bomb.state === 'planted') return { pos: [bomb.x, bomb.z], key: 'defuse', defuse: true };
+    if (this.lastSeenPos && now - this.lastSeenTime < 5000 && this.skill.smart > 0.5) return { pos: this.lastSeenPos, key: 'hunt' + Math.round(this.lastSeenPos[0]) + ',' + Math.round(this.lastSeenPos[1]) };
+    if (!this.defendSpot) {
+      const site = Math.random() < 0.5 ? 'A' : 'B';
+      this.defendSpot = this.randomSpotIn(room.map.sites[site]);
+    }
+    return { pos: this.defendSpot, key: 'defend', guard: true };
   }
 
-  navigate(now) {
+  navigate(now, blind) {
     const p = this.p, room = this.room;
     const goal = this.chooseGoal();
-    const key = (goal.node || '') + (goal.pos ? goal.pos.join(',') : '') + (goal.plant ? 'P' : '') + (goal.defuse ? 'D' : '');
-    if (this.goalKey !== key) {
-      this.goalKey = key;
-      const start = nearestNode(p.x, p.z, room.world, p.y);
-      const end = goal.node || nearestNode(goal.pos[0], goal.pos[1], room.world, 1);
-      this.path = start ? shortestPath(start, end) : [end];
+    if (this.goalKey !== goal.key || this.navVersion !== room.navVersion || (now > (this.repathAt || 0) && !this.path.length && !goal.guard)) {
+      this.goalKey = goal.key;
+      this.navVersion = room.navVersion;
+      this.repathAt = now + 2500;
+      this.path = S.navPath(room.nav, room.world, p.x, p.z, goal.pos[0], goal.pos[1]) || [];
     }
+    if (blind) return { mx: (Math.random() - 0.5) * 2, mz: -0.5, b: 0 };
 
     let tx, tz;
-    let b = 0;
-    if (this.path.length) {
-      const n = NODES[this.path[0]];
-      tx = n[0]; tz = n[1];
-      if (Math.hypot(tx - p.x, tz - p.z) < 0.9) { this.path.shift(); }
-    } else if (goal.pos) {
-      tx = goal.pos[0]; tz = goal.pos[1];
-    }
+    while (this.path.length && Math.hypot(this.path[0][0] - p.x, this.path[0][1] - p.z) < 0.7) this.path.shift();
+    if (this.path.length) { tx = this.path[0][0]; tz = this.path[0][1]; }
 
-    // Goal behaviours once there
-    const atEnd = this.path.length === 0;
-    if (atEnd && goal.plant && S.siteAt(p.x, p.z)) {
-      return { mx: 0, mz: 0, b: BTN.USE };
-    }
-    if (atEnd && goal.defuse && goal.pos) {
-      const d = Math.hypot(goal.pos[0] - p.x, goal.pos[1] - p.z);
-      if (d < CONFIG.BOMB.DEFUSE_RANGE * 0.7) return { mx: 0, mz: 0, b: BTN.USE | BTN.CROUCH };
-      tx = goal.pos[0]; tz = goal.pos[1];
-    }
+    const distGoal = Math.hypot(goal.pos[0] - p.x, goal.pos[1] - p.z);
+    if (goal.plant && S.siteAt(room.map, p.x, p.z) && (distGoal < 2.5 || !this.path.length)) return { mx: 0, mz: 0, b: BTN.USE };
+    if (goal.defuse && distGoal < CONFIG.BOMB.DEFUSE_RANGE * 0.7) return { mx: 0, mz: 0, b: BTN.USE | BTN.CROUCH };
     if (tx === undefined) {
-      // guard: slowly look around
-      this.lookAround += 0.02;
-      return { mx: 0, mz: 0, b: 0, yaw: p.yaw + Math.sin(this.lookAround) * 0.05 };
+      if (distGoal > 0.6 && !goal.guard) { tx = goal.pos[0]; tz = goal.pos[1]; }
+      else {
+        // hold an angle: look around towards the enemy side of the map
+        this.lookAround += 0.03;
+        const base = p.team === 'CT' ? Math.PI : 0;
+        return { mx: 0, mz: 0, b: 0, yaw: base + Math.sin(this.lookAround) * 1.1 };
+      }
     }
-
     const dx = tx - p.x, dz = tz - p.z;
     const yaw = Math.atan2(-dx, -dz);
-    let mx = 0, mz = 1;
-
-    // stuck detection
+    let mx = 0, mz = 1, b = 0;
     if (now > this.stuckCheckAt) {
       const moved = Math.hypot(p.x - this.stuckPos[0], p.z - this.stuckPos[1]);
-      if (moved < 0.4 && Math.hypot(dx, dz) > 1) {
+      if (moved < 0.4) {
         this.unstickUntil = now + 600;
         this.unstickDir = Math.random() < 0.5 ? -1 : 1;
         this.stuckCount = (this.stuckCount || 0) + 1;
-        if (this.stuckCount > 3) { this.goalKey = null; this.stuckCount = 0; }
+        if (this.stuckCount > 2) { this.goalKey = null; this.stuckCount = 0; }
       } else this.stuckCount = 0;
       this.stuckPos = [p.x, p.z];
       this.stuckCheckAt = now + 1000;

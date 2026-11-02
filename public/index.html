@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#11151c">
+  <meta name="theme-color" content="#0b0f15">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="description" content="BLOCK OPS: Tactical Drift — 5v5 voxel taktiksel nişancı. Parçalanabilir bloklar, gerçekçi sekme, bomba kurma/imha.">
+  <meta name="description" content="BLOCK OPS: Tactical Drift — 5v5 voxel taktiksel nişancı. 3 harita, 16 silah, bombalar, parçalanabilir dünya.">
   <title>BLOCK OPS: Tactical Drift</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -17,47 +17,99 @@
 <body>
   <canvas id="game"></canvas>
   <div id="tags"></div>
+  <div id="vignette"></div>
 
-  <!-- ============ MAIN MENU ============ -->
+  <!-- ================= MAIN MENU ================= -->
   <div id="menu" class="overlay">
-    <div class="menu-card">
-      <div class="logo"><span class="b1">BLOCK</span><span class="b2">OPS</span></div>
-      <div class="sub">TACTICAL DRIFT</div>
-      <label>Oyuncu Adı<input id="inName" maxlength="16" autocomplete="off" spellcheck="false"></label>
-      <label>Oda Kodu <small>(boş = hızlı eşleşme)</small><input id="inRoom" maxlength="8" autocomplete="off" spellcheck="false" placeholder="ör. ALFA1"></label>
-      <label>Bot Sayısı<select id="inBots">
-        <option value="0">0 — sadece insanlar</option><option value="3">3</option><option value="5">5</option>
-        <option value="9" selected>9 — tam 5v5</option></select></label>
-      <details class="adv">
-        <summary>Ayarlar</summary>
-        <label>Sunucu Adresi<input id="inServer" autocomplete="off" spellcheck="false" placeholder="https://sunucu.ornek.com"></label>
-        <label>Fare Hassasiyeti <b id="sensVal"></b><input id="inSens" type="range" min="0.2" max="4" step="0.05"></label>
-        <label>Dokunmatik Hassasiyet <b id="tsensVal"></b><input id="inTSens" type="range" min="0.2" max="3" step="0.05"></label>
-        <label>Görüş Açısı (FOV) <b id="fovVal"></b><input id="inFov" type="range" min="65" max="100" step="1"></label>
-        <label>Ses <b id="volVal"></b><input id="inVol" type="range" min="0" max="1" step="0.05"></label>
-        <label>Grafik Kalitesi<select id="inQuality"><option value="low">Düşük (pil dostu)</option><option value="medium">Orta</option><option value="high">Yüksek</option></select></label>
-      </details>
-      <div class="row">
-        <button id="btnQuick" class="primary">HIZLI OYNA</button>
-        <button id="btnJoin">ODAYA GİR / OLUŞTUR</button>
-      </div>
-      <button id="btnInstall" class="install hidden">📲 UYGULAMA OLARAK YÜKLE</button>
-      <div id="iosHint" class="ioshint hidden">📲 <b>iPhone'a uygulama olarak kurmak için:</b> Safari'de alttaki <b>Paylaş</b> (□↑) simgesine dokun → <b>Ana Ekrana Ekle</b>.</div>
-      <div id="menuErr" class="err"></div>
-      <div class="help">
-        <b>PC:</b> WASD hareket · Fare nişan/ateş · Sağ tık dürbün · Space zıpla · C/Ctrl eğil · Shift yürü · R şarjör · 1-3/Q/Teker silah · E kur/çöz · B market · Tab skor · M takım · Y sohbet
-      </div>
+    <div class="menu-shell">
+      <aside class="menu-side">
+        <div class="brand">
+          <div class="logo"><span class="b1">BLOCK</span><span class="b2">OPS</span></div>
+          <div class="sub">TACTICAL DRIFT</div>
+        </div>
+        <nav class="tabs">
+          <button class="tab on" data-tab="play">▶ OYNA</button>
+          <button class="tab" data-tab="settings">⚙ AYARLAR</button>
+          <button class="tab" data-tab="controls">⌨ KONTROLLER</button>
+        </nav>
+        <div class="side-foot">
+          <button id="btnInstall" class="install hidden">📲 UYGULAMA OLARAK YÜKLE</button>
+          <div id="iosHint" class="ioshint hidden">📲 <b>iPhone'a kurmak için:</b> Safari'de <b>Paylaş</b> (□↑) → <b>Ana Ekrana Ekle</b></div>
+          <div class="ver" id="verText">v2.0</div>
+        </div>
+      </aside>
+
+      <section class="menu-main">
+        <!-- PLAY -->
+        <div class="pane on" data-pane="play">
+          <h3 class="sec">HARİTA</h3>
+          <div id="mapCards" class="map-cards"></div>
+          <h3 class="sec">ZORLUK</h3>
+          <div id="diffBtns" class="seg"></div>
+          <div id="diffDesc" class="diff-desc"></div>
+          <div class="grid2">
+            <label>OYUNCU ADI<input id="inName" maxlength="16" autocomplete="off" spellcheck="false"></label>
+            <label>BOTLAR<select id="inBots">
+              <option value="0">Yok — sadece insanlar</option><option value="3">3 bot</option><option value="5">5 bot</option>
+              <option value="9" selected>9 bot — tam 5v5</option></select></label>
+          </div>
+          <label>ODA KODU <small>— arkadaşlarınla aynı kodu yazın</small><input id="inRoom" maxlength="8" autocomplete="off" spellcheck="false" placeholder="ör. EKIP1"></label>
+          <div class="cta">
+            <button id="btnQuick" class="primary big">HIZLI OYNA</button>
+            <button id="btnJoin" class="big">ODA KUR / KATIL</button>
+          </div>
+          <div id="menuErr" class="err"></div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div class="pane" data-pane="settings">
+          <h3 class="sec">GRAFİK</h3>
+          <label>Kalite<select id="inQuality">
+            <option value="auto">Otomatik — FPS'e göre çözünürlüğü ayarlar (önerilen)</option>
+            <option value="low">Düşük — zayıf bilgisayar / pil tasarrufu</option>
+            <option value="medium">Orta</option>
+            <option value="high">Yüksek — keskin kenarlar (MSAA)</option></select></label>
+          <label>Görüş Açısı (FOV) <b id="fovVal"></b><input id="inFov" type="range" min="65" max="105" step="1"></label>
+          <label class="check"><input id="inShowFps" type="checkbox"> FPS ve ping göster</label>
+          <h3 class="sec">KONTROL</h3>
+          <label>Fare Hassasiyeti <b id="sensVal"></b><input id="inSens" type="range" min="0.2" max="4" step="0.05"></label>
+          <label>Dokunmatik Hassasiyet <b id="tsensVal"></b><input id="inTSens" type="range" min="0.2" max="3" step="0.05"></label>
+          <h3 class="sec">SES</h3>
+          <label>Ses Seviyesi <b id="volVal"></b><input id="inVol" type="range" min="0" max="1" step="0.05"></label>
+          <h3 class="sec">SUNUCU</h3>
+          <label>Sunucu Adresi <small>— boş bırakırsan bu sitenin sunucusu</small><input id="inServer" autocomplete="off" spellcheck="false" placeholder="https://sunucu.ornek.com"></label>
+        </div>
+
+        <!-- CONTROLS -->
+        <div class="pane" data-pane="controls">
+          <h3 class="sec">KLAVYE & FARE</h3>
+          <div class="keys">
+            <div><kbd>W A S D</kbd>Hareket</div><div><kbd>Fare</kbd>Nişan / Ateş</div>
+            <div><kbd>Sağ Tık</kbd>Dürbün · bombayı yakına at</div><div><kbd>Space</kbd>Zıpla</div>
+            <div><kbd>C</kbd>/<kbd>Ctrl</kbd>Eğil</div><div><kbd>Shift</kbd>Sessiz yürü</div>
+            <div><kbd>R</kbd>Şarjör</div><div><kbd>1 2 3</kbd>Silahlar</div>
+            <div><kbd>4</kbd>/<kbd>G</kbd>Bombalar (tekrar bas: değiştir)</div><div><kbd>Q</kbd>Son silah</div>
+            <div><kbd>E</kbd>Bomba kur / çöz (basılı tut)</div><div><kbd>B</kbd>Market</div>
+            <div><kbd>Tab</kbd>Skor tablosu</div><div><kbd>M</kbd>/<kbd>Esc</kbd>Menü · takım</div>
+            <div><kbd>Y</kbd>Sohbet</div><div><kbd>F3</kbd>Performans</div>
+          </div>
+          <h3 class="sec">MOBİL</h3>
+          <p class="muted">Sol taraf: joystick (az itersen sessiz yürür). Sağ taraf: sürükleyerek bak. 🔥 basılı tutup sürükle: ateş ederken nişan al. 💣 bombalar, ◎ dürbün / yakına atış.</p>
+        </div>
+      </section>
     </div>
   </div>
 
-  <!-- ============ HUD ============ -->
+  <!-- ================= HUD ================= -->
   <div id="hud" class="hidden">
+    <div id="radarWrap"><canvas id="radar" width="180" height="180"></canvas><div id="radarMap"></div></div>
+    <div id="moneyBox"><span id="money">$800</span><span id="moneyDelta"></span></div>
     <div id="topbar">
-      <div class="team t"><span id="scT">0</span></div>
+      <div class="side t"><div class="alive" id="aliveT"></div><div class="score" id="scT">0</div></div>
       <div class="mid"><div id="timer">0:00</div><div id="roundInfo">ISINMA</div></div>
-      <div class="team ct"><span id="scCT">0</span></div>
+      <div class="side ct"><div class="score" id="scCT">0</div><div class="alive" id="aliveCT"></div></div>
     </div>
-    <div id="aliveBar"><span id="aliveT"></span><span id="aliveCT"></span></div>
+    <div id="bombStatus"></div>
     <div id="killfeed"></div>
     <div id="center"></div>
     <div id="bigMsg"></div>
@@ -66,49 +118,59 @@
     <div id="dmgRing"></div>
     <div id="scope"><div class="lens"></div></div>
     <div id="progress"><div class="label"></div><div class="bar"><i></i></div></div>
-    <div id="bombStatus"></div>
-    <div id="bottomLeft">
-      <div class="stat"><span class="ico">✚</span><span id="hp">100</span></div>
-      <div class="stat"><span class="ico" id="armorIco">⛨</span><span id="armor">0</span></div>
-      <div id="money">$800</div>
-      <div id="kitIco" class="hidden">🔧 KİT</div>
-      <div id="bombIco" class="hidden">💣 BOMBA SENDE</div>
+    <div id="vitals">
+      <div class="vital hp"><span class="ico">✚</span><span id="hp">100</span><div class="bar"><i id="hpBar"></i></div></div>
+      <div class="vital ar"><span class="ico" id="armorIco">⛨</span><span id="armor">0</span><div class="bar"><i id="arBar"></i></div></div>
+      <div id="tags2"><span id="kitIco" class="chip hidden">🔧 KİT</span><span id="bombIco" class="chip bomb hidden">💣 BOMBA SENDE</span></div>
     </div>
-    <div id="bottomRight">
+    <div id="weaponBox">
+      <img id="weaponIcon" alt="">
       <div id="weaponName">—</div>
-      <div id="ammo"><span id="ammoMag">0</span><small> / <span id="ammoRes">0</span></small></div>
+      <div id="ammo"><span id="ammoMag">0</span><small>/<span id="ammoRes">0</span></small></div>
+      <div id="nadeRow"></div>
       <div id="slots"></div>
     </div>
     <div id="specBar" class="hidden"></div>
-    <div id="buyHint" class="hidden">[B] MARKET</div>
+    <div id="buyHint" class="hidden"><kbd>B</kbd> MARKET</div>
     <div id="chatLog"></div>
     <input id="chatInput" class="hidden" maxlength="120" placeholder="Mesaj yaz, Enter ile gönder">
     <div id="stats" class="hidden"></div>
     <div id="redFlash"></div>
+    <div id="flashOverlay"></div>
   </div>
 
-  <!-- ============ BUY MENU ============ -->
+  <!-- ================= BUY MENU ================= -->
   <div id="buyMenu" class="overlay hidden">
-    <div class="panel">
+    <div class="panel buy">
       <div class="panel-head"><h2>MARKET</h2><div id="buyMoney">$0</div><button class="close" data-close="buy">✕</button></div>
       <div id="buyCols"></div>
       <div id="buyMsg"></div>
     </div>
   </div>
 
-  <!-- ============ SCOREBOARD ============ -->
+  <!-- ================= SCOREBOARD ================= -->
   <div id="scoreboard" class="overlay hidden">
     <div class="panel wide">
       <div class="panel-head"><h2 id="sbTitle">SKOR TABLOSU</h2><div id="sbRoom"></div></div>
       <div class="sb-cols">
-        <table class="sb t"><thead><tr><th>SALDIRI (T) <span id="sbScT"></span></th><th>$</th><th title="Leş">L</th><th title="Asist">A</th><th title="Ölüm">Ö</th><th>★</th><th>Ping</th></tr></thead><tbody id="sbT"></tbody></table>
-        <table class="sb ct"><thead><tr><th>SAVUNMA (CT) <span id="sbScCT"></span></th><th>$</th><th title="Leş">L</th><th title="Asist">A</th><th title="Ölüm">Ö</th><th>★</th><th>Ping</th></tr></thead><tbody id="sbCT"></tbody></table>
+        <table class="sb t"><thead><tr><th>SALDIRI <span id="sbScT"></span></th><th></th><th>$</th><th title="Leş">L</th><th title="Asist">A</th><th title="Ölüm">Ö</th><th>★</th><th>Ping</th></tr></thead><tbody id="sbT"></tbody></table>
+        <table class="sb ct"><thead><tr><th>SAVUNMA <span id="sbScCT"></span></th><th></th><th>$</th><th title="Leş">L</th><th title="Asist">A</th><th title="Ölüm">Ö</th><th>★</th><th>Ping</th></tr></thead><tbody id="sbCT"></tbody></table>
       </div>
       <div id="sbSpec"></div>
     </div>
   </div>
 
-  <!-- ============ PAUSE / TEAM ============ -->
+  <!-- ================= END OF MATCH ================= -->
+  <div id="endScreen" class="overlay hidden">
+    <div class="panel wide end">
+      <div id="endTitle"></div>
+      <div id="endScore"></div>
+      <table class="sb end-table"><thead><tr><th>OYUNCU</th><th>TAKIM</th><th>L</th><th>A</th><th>Ö</th><th>K/Ö</th><th>HASAR</th><th>KAFA%</th><th>MVP</th></tr></thead><tbody id="endRows"></tbody></table>
+      <div id="endNext"></div>
+    </div>
+  </div>
+
+  <!-- ================= PAUSE ================= -->
   <div id="pause" class="overlay hidden">
     <div class="panel">
       <div class="panel-head"><h2>DURAKLATILDI</h2><div id="pauseRoom"></div></div>
@@ -131,7 +193,7 @@
     </div>
   </div>
 
-  <!-- ============ TOUCH CONTROLS ============ -->
+  <!-- ================= TOUCH ================= -->
   <div id="touch">
     <div id="joyZone"><div id="joyBase"><div id="joyKnob"></div></div></div>
     <div id="lookZone"></div>
@@ -143,6 +205,7 @@
     <div id="tUse" class="tb">E</div>
     <div id="tScope" class="tb">◎</div>
     <div id="tSwitch" class="tb">⇄</div>
+    <div id="tNade" class="tb">💣</div>
     <div id="tBuy" class="tb sm">$</div>
     <div id="tScore" class="tb sm">☰</div>
     <div id="tMenu" class="tb sm">⏸</div>
@@ -153,6 +216,7 @@
 
   <script src="vendor/socket.io.min.js"></script>
   <script src="shared/shared.js"></script>
+  <script src="shared/maps.js"></script>
   <script src="config.js"></script>
   <script type="module" src="js/main.js"></script>
 </body>

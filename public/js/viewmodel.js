@@ -13,7 +13,10 @@ const BASE = {
   smg: { pos: [0.18, -0.19, -0.4], rot: [0.0, -0.06, 0] },
   sniper: { pos: [0.2, -0.21, -0.45], rot: [0.0, -0.045, 0] },
   pistol: { pos: [0.17, -0.18, -0.42], rot: [0.03, -0.08, 0] },
-  knife: { pos: [0.2, -0.19, -0.36], rot: [0.15, -0.25, -0.35] }
+  knife: { pos: [0.2, -0.19, -0.36], rot: [0.15, -0.25, -0.35] },
+  shotgun: { pos: [0.19, -0.2, -0.42], rot: [0.0, -0.05, 0] },
+  lmg: { pos: [0.2, -0.22, -0.44], rot: [0.0, -0.05, 0] },
+  grenade: { pos: [0.18, -0.2, -0.4], rot: [0.2, -0.3, 0] }
 };
 
 export class ViewModel {
@@ -70,6 +73,9 @@ export class ViewModel {
     this.flashNode.box(0.025, 0.16, 0.025, 0, 0, -0.02, fc, 1, 0.8);
     this.flashNode.box(0.03, 0.03, 0.03, 0, 0, -0.14, [1, 1, 0.85], 1, 1);
     this.reloadStart = -1e9;
+    this.throwStart = -1e9;
+    this.pump = gun.root.find('pump');
+    this.pin = gun.root.find('pin');
     if (!silent) this.drawStart = this.time;
     this.drawDur = (S.WEAPONS[id] || S.WEAPONS.knife).drawTime;
   }
@@ -107,6 +113,7 @@ export class ViewModel {
     this.flashUntil = this.time + 0.045;
     this.flashRot = Math.random() * Math.PI;
   }
+  throwNade() { this.throwStart = this.time; }
   startReload(duration) { this.reloadStart = this.time; this.reloadDur = duration; }
   cancelReload() { this.reloadStart = -1e9; }
   landed(speed) { this.land.impulse(-Math.min(speed, 14) * 0.035); }
@@ -166,6 +173,24 @@ export class ViewModel {
       rz += bt * 0.35; py -= bt * 0.025; rx += bt * 0.08;
     }
 
+    // pump-action cycle
+    if (this.kind === 'shotgun' && this.pump && this.weaponId === 'breacher') {
+      const pc = window01(t - this.lastShot, 0.12, 0.62, 0.12);
+      this.pump.pos = [0, 0.02, -0.34 + 0.09 * pc];
+      rx += pc * 0.08; pz += pc * 0.015;
+    }
+    // grenade: pin pull during draw, wind-up + throw
+    let thrown = false;
+    if (this.kind === 'grenade') {
+      if (this.pin) { const pp = range01(t - this.drawStart, 0.15, 0.45); this.pin.pos = [-0.025 - pp * 0.12, 0.07 + pp * 0.05, pp * 0.05]; this.pin.visible = pp < 0.95; }
+      const tt = t - this.throwStart;
+      if (tt >= 0 && tt < 0.7) {
+        const back = Ease.outCubic(range01(tt, 0, 0.14)), fwd = Ease.inOutQuad(range01(tt, 0.14, 0.3));
+        pz += back * 0.1 - fwd * 0.28; py += back * 0.05 + fwd * 0.04; rx -= back * 0.7 - fwd * 1.2;
+        if (tt > 0.3) thrown = true;
+      }
+    }
+
     // reload keyframes
     let magOffset = 0, magVisible = true, lArm = 0;
     if (this.reloadDur > 0) {
@@ -204,6 +229,7 @@ export class ViewModel {
       py -= (1 - e) * 0.26; rx -= (1 - e) * 0.9; rz += (1 - e) * 0.3;
     }
 
+    if (this.gun) this.gun.root.visible = !thrown;
     this.holder.pos = [px, py, pz];
     this.holder.rot = [rx, ry, rz];
     this.visible = !ctx.scoped;

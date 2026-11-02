@@ -5,7 +5,10 @@
  *  2. Hitscan: chest / headshot / armour / wall-block / crate penetration / lag-compensation rewind
  *  3. Economy: buy rules, kill rewards, loss bonus
  *  4. Bomb: plant → defuse with kit
- *  5. Full bot-vs-bot match runs to completion with halftime
+ *  5. Maps: every map valid (spawns free, both sites reachable by A* from both spawns)
+ *  6. Grenades (HE damage + voxel destruction, flash blinding, smoke blocks bot vision), shotgun pellets
+ *  7. Difficulty presets change bot damage
+ *  8. Full bot-vs-bot match on EVERY map completes with halftime
  * Run: node scripts/smoke-test.js
  */
 const assert = require('assert');
@@ -22,9 +25,9 @@ function fakeSocket(id) {
   s.volatile = { emit: s.emit };
   return s;
 }
-function makeRoom() {
+function makeRoom(opts) {
   const io = { to: () => ({ emit() {} }) };
-  const r = new Room(io, 'TEST', () => {});
+  const r = new Room(io, 'TEST', () => {}, Object.assign({ map: 'dustgrid', difficulty: 'medium' }, opts || {}));
   clearInterval(r.timer);
   return r;
 }
@@ -38,7 +41,7 @@ function place(p, x, y, z) { p.x = x; p.y = y; p.z = z; p.vx = p.vy = p.vz = 0; 
 console.log('BLOCK OPS smoke tests');
 
 test('physics is deterministic between two simulations', () => {
-  const w = new S.VoxelWorld(); S.generateMap(w);
+  const w = new S.VoxelWorld(); S.generateMap(w, 'dustgrid');
   const a = { x: 32.5, y: 1, z: 5.5, vx: 0, vy: 0, vz: 0, onGround: true, crouch: false };
   const b = Object.assign({}, a);
   const rng = S.mulberry32(7);
@@ -51,20 +54,20 @@ test('physics is deterministic between two simulations', () => {
 });
 
 test('player cannot walk through walls', () => {
-  const w = new S.VoxelWorld(); S.generateMap(w);
+  const w = new S.VoxelWorld(); S.generateMap(w, 'dustgrid');
   const s = { x: 13.5, y: 1, z: 20.5, vx: 0, vy: 0, vz: 0, onGround: true, crouch: false };
   for (let i = 0; i < 300; i++) S.stepPlayer(s, { mx: 0, mz: 1, yaw: -Math.PI / 2, b: 0 }, 1 / 60, w, {}); // walk +x into B1 wall (x=15)
   assert.ok(s.x < 15 - S.CONFIG.PLAYER.RADIUS + 0.01, 'x=' + s.x);
 });
 
-function duel(weapon, victimArmor, helmet, targetPart) {
+function duel(weapon, victimArmor, helmet, targetPart, dist) {
   const r = makeRoom();
   r.phase = 'live';
   const sa = fakeSocket('a'), sv = fakeSocket('v');
   const a = r.addHuman(sa, 'A'); const v = r.addHuman(sv, 'V');
   r.assignTeam(a, 'T'); r.assignTeam(v, 'CT');
   a.alive = v.alive = true; a.hp = v.hp = 100;
-  place(a, 32.5, 1, 15); place(v, 32.5, 1, 25);
+  place(a, 32.5, 1, 15); place(v, 32.5, 1, 15 + (dist || 10));
   v.armor = victimArmor; v.helmet = helmet;
   a.weapons[1] = { id: weapon, ammo: S.WEAPONS[weapon].mag, reserve: 90 }; a.slot = 1; a.drawEnd = 0;
   const eye = [a.x, a.y + S.CONFIG.PLAYER.EYE, a.z];
@@ -88,7 +91,7 @@ test('Krait headshot kills through helmet (one-tap)', () => {
   const { v, a } = duel('krait', 100, true, 'head');
   assert.strictEqual(v.alive, false);
   assert.strictEqual(a.kills, 1);
-  assert.strictEqual(a.money, 800 + 300);
+  assert.strictEqual(a.money, S.DIFFICULTY.medium.startMoney + 300);
 });
 test('Sentinel headshot vs helmet does NOT one-tap', () => {
   const { v } = duel('sentinel', 100, true, 'head');
@@ -184,31 +187,89 @@ test('bomb: plant in site then defuse with kit → CT win + money', () => {
   assert.strictEqual(r.bomb.state, 'defused');
   assert.strictEqual(r.phase, 'post');
   assert.strictEqual(r.score.CT, 1);
-  assert.ok(t.money >= 800 + 300 + 1400 + 800 - 1, 'T got plant + loss + plant bonus: ' + t.money);
+  assert.ok(t.money >= S.DIFFICULTY.medium.startMoney + 300 + 1400 + 800 - 1, 'T got plant + loss + plant bonus: ' + t.money);
 });
 
-// ----------------------------------------------------------------------------
-// Full match simulation (accelerated: ticks run as fast as possible)
-// ----------------------------------------------------------------------------
-test('full 10-bot match completes with a winner', () => {
-  Object.assign(S.CONFIG.ROUND, { WARMUP: 1, FREEZE: 1, POST: 1, GAMEOVER: 1, LIVE: 90 });
-  const events = [];
-  const io = { to: () => ({ emit: (ev, d) => events.push([ev, d]) }) };
-  const r = new Room(io, 'SIM', () => {});
-  clearInterval(r.timer);
-  const watcher = r.addHuman(fakeSocket('w'), 'W'); r.assignTeam(watcher, 'SPEC');
-  for (let i = 0; i < 5; i++) { r.addBot('T'); r.addBot('CT'); }
-  let virtual = Date.now();
-  const realDate = Date.now;
-  Date.now = () => virtual;
-  try {
-    for (let i = 0; i < 30 * 60 * 40 && r.phase !== 'gameover'; i++) { virtual += 1000 / 30; r.tick(); }
-  } finally { Date.now = realDate; }
-  const over = events.find((e) => e[0] === 'over');
-  assert.ok(over, 'match ended (phase ' + r.phase + ', score ' + JSON.stringify(r.score) + ')');
-  const ends = events.filter((e) => e[0] === 'rend').map((e) => e[1].r);
-  const half = events.some((e) => e[0] === 'half');
-  console.log('     final', JSON.stringify(over[1].sc), 'rounds', ends.length, 'halftime', half, 'reasons', JSON.stringify(ends.reduce((m, x) => (m[x] = (m[x] || 0) + 1, m), {})));
+for (const id of S.MAP_ORDER) {
+  test(`map "${id}": spawns free, both sites reachable from both spawns`, () => {
+    const m = S.getMap(id);
+    const w = new S.VoxelWorld(); S.generateMap(w, id);
+    const nav = S.buildNav(w);
+    for (const t of ['T', 'CT']) for (const sp of m.spawns[t]) assert.ok(!S.boxCollides(w, sp[0], sp[1], sp[2], 1.8), `spawn ${t} ${sp}`);
+    for (const site of ['A', 'B']) {
+      const c = S.siteCenter(m, site);
+      for (const t of ['T', 'CT']) assert.ok(S.navPath(nav, w, m.spawns[t][0][0], m.spawns[t][0][2], c[0], c[1]), `${t} → ${site}`);
+    }
+  });
+}
+
+test('HE grenade damages players behind it and destroys crates; walls block it', () => {
+  const r = makeRoom(); r.phase = 'live';
+  const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V'), hidden = r.addHuman(fakeSocket('h'), 'H');
+  r.assignTeam(a, 'T'); r.assignTeam(v, 'CT'); r.assignTeam(hidden, 'CT');
+  a.alive = v.alive = hidden.alive = true;
+  place(a, 32.5, 1, 10); place(v, 34.5, 1, 15.5); place(hidden, 12.5, 1, 20.5);   // hidden is behind the B1 wall
+  r.detonate({ id: 1, type: 'he', owner: a.id, x: 34.5, y: 1.2, z: 17.5, t0: 0 }, r.now());   // next to crate (34..35,17..18)
+  assert.ok(v.hp < 100 && v.hp > 0, 'victim hurt: ' + v.hp);
+  assert.strictEqual(hidden.hp, 100);
+  assert.ok(r.pendingBlocks.length > 0, 'crate destroyed');
 });
+test('flashbang blinds a player looking at it, not one looking away', () => {
+  const r = makeRoom(); r.phase = 'live';
+  const a = r.addHuman(fakeSocket('a'), 'A'), b = r.addHuman(fakeSocket('b'), 'B');
+  r.assignTeam(a, 'T'); r.assignTeam(b, 'CT');
+  a.alive = b.alive = true;
+  place(a, 32.5, 1, 10); place(b, 32.5, 1, 20);
+  a.yaw = Math.PI;  // a looks +z (towards the flash)
+  b.yaw = Math.PI;  // b looks +z (away from the flash behind him)
+  r.detonate({ id: 2, type: 'flash', owner: a.id, x: 32.5, y: 2, z: 14, t0: 0 }, r.now());
+  const now = r.now();
+  assert.ok(a.blindUntil - now > 2500, 'facing player fully blind');
+  assert.ok(b.blindUntil - now < 1200, 'player looking away barely blind');
+});
+test('smoke cloud blocks line of sight', () => {
+  const now = 10000;
+  const smokes = [{ x: 32.5, y: 2, z: 20, t0: now - 3000 }];
+  assert.strictEqual(S.smokeBlocks(smokes, [32.5, 2.6, 10], [32.5, 2.6, 30], now), true);
+  assert.strictEqual(S.smokeBlocks(smokes, [20, 2.6, 10], [20, 2.6, 30], now), false);
+});
+test('shotgun fires 9 pellets and is deadly up close', () => {
+  const { v } = duel('breacher', 0, false, 'chest', 4);
+  assert.strictEqual(S.shotDirections(S.WEAPONS.breacher, 0, 0, [0, 0], 4, 1, 1).length, 9);
+  assert.ok(100 - v.hp > 60 || !v.alive, 'close-range pump damage ' + (100 - v.hp));
+});
+test('difficulty: easy bots deal much less damage to humans than hard bots', () => {
+  const dmgFor = (diff) => {
+    const r = makeRoom({ difficulty: diff }); r.phase = 'live';
+    const bot = r.addBot('T'), h = r.addHuman(fakeSocket('h'), 'H');
+    r.assignTeam(h, 'CT'); bot.alive = h.alive = true;
+    r.dealDamage(h, bot, 40, 'chest', 'krait');
+    return 100 - h.hp;
+  };
+  assert.ok(dmgFor('easy') < dmgFor('hard') * 0.7, `easy ${dmgFor('easy')} vs hard ${dmgFor('hard')}`);
+});
+
+for (const mapId of S.MAP_ORDER) {
+  test(`full 10-bot match on ${mapId} completes with a winner`, () => {
+    Object.assign(S.CONFIG.ROUND, { WARMUP: 1, FREEZE: 1, POST: 1, GAMEOVER: 1, LIVE: 90 });
+    const events = [];
+    const io = { to: () => ({ emit: (ev, d) => events.push([ev, d]) }) };
+    const r = new Room(io, 'SIM', () => {}, { map: mapId, difficulty: 'medium' });
+    clearInterval(r.timer);
+    const watcher = r.addHuman(fakeSocket('w'), 'W'); r.assignTeam(watcher, 'SPEC');
+    for (let i = 0; i < 5; i++) { r.addBot('T'); r.addBot('CT'); }
+    let virtual = Date.now();
+    const realDate = Date.now;
+    Date.now = () => virtual;
+    try {
+      for (let i = 0; i < 30 * 60 * 40 && !events.some((e) => e[0] === 'over'); i++) { virtual += 1000 / 30; r.tick(); }
+    } finally { Date.now = realDate; }
+    const over = events.find((e) => e[0] === 'over');
+    assert.ok(over, 'match ended (phase ' + r.phase + ', score ' + JSON.stringify(r.score) + ')');
+    const ends = events.filter((e) => e[0] === 'rend').map((e) => e[1].r);
+    console.log('     final', JSON.stringify(over[1].sc), 'rounds', ends.length, 'halftime', events.some((e) => e[0] === 'half'),
+      JSON.stringify(ends.reduce((m, x) => (m[x] = (m[x] || 0) + 1, m), {})), 'grenades', events.filter((e) => e[0] === 'nade').length);
+  });
+}
 
 console.log(`\n${passed} test geçti${process.exitCode ? ', bazı testler BAŞARISIZ' : ''}.`);

@@ -3,10 +3,10 @@
  * no browser bar) and caches the game shell so it opens instantly.
  * Realtime traffic (Socket.io / WebSocket) is never cached.
  */
-const CACHE = 'blockops-v1.0.0';
+const CACHE = 'blockops-v2.0.0';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'config.js', 'manifest.webmanifest',
-  'shared/shared.js', 'vendor/socket.io.min.js',
+  'shared/shared.js', 'shared/maps.js', 'vendor/socket.io.min.js',
   'js/main.js', 'js/engine.js', 'js/world.js', 'js/models.js', 'js/viewmodel.js',
   'js/effects.js', 'js/audio.js', 'js/input.js', 'js/hud.js', 'js/net.js',
   'icons/icon-192.png', 'icons/icon-512.png'

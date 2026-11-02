@@ -10,6 +10,15 @@ const GUN_SFX = {
   hc50: { f: 1700, q: 0.6, dur: 0.38, vol: 0.85, thump: 70 },
   viper: { f: 3600, q: 0.7, dur: 0.12, vol: 0.45, thump: 120 },
   krait: { f: 2100, q: 0.6, dur: 0.26, vol: 0.75, thump: 75 },
+  vex: { f: 3000, q: 0.7, dur: 0.14, vol: 0.5, thump: 100 },
+  wasp: { f: 3300, q: 0.7, dur: 0.12, vol: 0.45, thump: 110 },
+  hornet: { f: 3800, q: 0.7, dur: 0.11, vol: 0.42, thump: 120 },
+  breacher: { f: 900, q: 0.4, dur: 0.45, vol: 1.0, thump: 60 },
+  mauler: { f: 1000, q: 0.45, dur: 0.38, vol: 0.9, thump: 65 },
+  titan: { f: 1900, q: 0.55, dur: 0.28, vol: 0.8, thump: 70 },
+  falcon: { f: 2300, q: 0.6, dur: 0.22, vol: 0.7, thump: 80 },
+  lynx: { f: 2500, q: 0.6, dur: 0.2, vol: 0.65, thump: 85 },
+  ranger: { f: 1600, q: 0.5, dur: 0.5, vol: 0.9, thump: 60 },
   sentinel: { f: 2600, q: 0.65, dur: 0.2, vol: 0.62, thump: 90 },
   longshot: { f: 1300, q: 0.5, dur: 0.7, vol: 1.0, thump: 55 }
 };
@@ -97,6 +106,23 @@ export class Sfx {
     if (s.thump) this.tone(d, t, s.thump * 2, s.thump * 0.5, 0.12, s.vol * 0.9);
     if (pos) this.noiseBurst(d, t + 0.05, s.dur * 3, 900, 0.3, s.vol * 0.12, 'lowpass');
   }
+  throwNade(pos) { if (this.ctx) this.noiseBurst(this.out(pos), this.ctx.currentTime, 0.18, 1400, 0.6, 0.25, 'bandpass'); }
+  nadeBounce(pos) { if (this.ctx) this.tone(this.out(pos), this.ctx.currentTime, 900 + Math.random() * 300, 600, 0.05, 0.25, 'triangle'); }
+  heBlast(pos) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime, d = this.out(pos);
+    this.noiseBurst(d, t, 1.2, 300, 0.4, 1.0, 'lowpass');
+    this.noiseBurst(d, t, 0.25, 2500, 0.5, 0.6, 'bandpass');
+    this.tone(d, t, 110, 30, 0.6, 0.9, 'sine');
+  }
+  flashBang(pos, ringSec) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.noiseBurst(this.out(pos), t, 0.35, 3500, 0.4, 0.9, 'highpass');
+    if (ringSec) this.tone(this.master, t, 3200, 3150, ringSec, 0.12, 'sine');
+  }
+  smokeHiss(pos) { if (this.ctx) this.noiseBurst(this.out(pos), this.ctx.currentTime, 2.5, 5000, 0.3, 0.35, 'highpass'); }
+  pump() { if (this.ctx) { const t = this.ctx.currentTime; this.noiseBurst(this.master, t + 0.15, 0.08, 1100, 2, 0.35); this.noiseBurst(this.master, t + 0.35, 0.07, 1500, 2, 0.3); } }
   dryFire() { if (!this.ctx) return; this.tone(this.master, this.ctx.currentTime, 2200, 1800, 0.03, 0.15, 'square'); }
   footstep(pos, vol) {
     if (!this.ctx) return;

@@ -39,7 +39,7 @@ export class Input {
 
   bindKeyboard() {
     const discrete = {
-      KeyR: 'reload', Digit1: 'slot1', Digit2: 'slot2', Digit3: 'slot3', KeyQ: 'lastWeapon',
+      KeyR: 'reload', Digit1: 'slot1', Digit2: 'slot2', Digit3: 'slot3', Digit4: 'slot4', KeyG: 'slot4', KeyQ: 'lastWeapon',
       KeyB: 'buy', KeyM: 'teamMenu', KeyY: 'chat', Enter: 'chat', F3: 'stats', KeyN: 'nextSpec'
     };
     window.addEventListener('keydown', (e) => {
@@ -165,6 +165,7 @@ export class Input {
     tap('tReload', 'reload');
     tap('tScope', 'scope');
     tap('tSwitch', 'nextWeapon');
+    tap('tNade', 'slot4');
     tap('tBuy', 'buy');
     tap('tScore', 'scoreboard', true);
     tap('tMenu', 'escape');

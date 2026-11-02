@@ -4,6 +4,7 @@ services:
     name: blockops-server
     runtime: node
     plan: free
+    region: frankfurt   # closest Render region to Türkiye (~40-60 ms instead of ~200 ms)
     buildCommand: npm install --omit=dev
     startCommand: node server/index.js
     healthCheckPath: /health

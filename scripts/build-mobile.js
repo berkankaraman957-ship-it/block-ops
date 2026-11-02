@@ -25,7 +25,7 @@ function copyDir(src, dst) {
 fs.rmSync(OUT, { recursive: true, force: true });
 copyDir(path.join(ROOT, 'public'), OUT);
 fs.mkdirSync(path.join(OUT, 'shared'), { recursive: true });
-fs.copyFileSync(path.join(ROOT, 'shared', 'shared.js'), path.join(OUT, 'shared', 'shared.js'));
+for (const f of ['shared.js', 'maps.js']) fs.copyFileSync(path.join(ROOT, 'shared', f), path.join(OUT, 'shared', f));
 fs.mkdirSync(path.join(OUT, 'vendor'), { recursive: true });
 let client;
 try {

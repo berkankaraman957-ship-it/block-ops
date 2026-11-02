@@ -2,10 +2,11 @@
  * BLOCK OPS: TACTICAL DRIFT — Shared deterministic core
  * Used by BOTH the Node.js server (require) and the browser client (window.SHARED).
  * Everything that must give identical results on both sides lives here:
- * config, voxel world + DDA raycast, player physics, weapons, recoil, spread, hitboxes, map.
+ * config, voxel world + DDA raycast, player physics, weapons, recoil, spread, hitboxes,
+ * map registry + A* navigation, grenade physics. Map layouts live in shared/maps.js.
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
+  if (typeof module === 'object' && module.exports) { module.exports = factory(); require('./maps.js')(module.exports); }
   else root.SHARED = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
@@ -14,23 +15,23 @@
   // CONFIG
   // ---------------------------------------------------------------------------
   const CONFIG = {
-    VERSION: '1.0.0',
+    VERSION: '2.0.0',
     TICK_RATE: 30,            // server simulation + snapshot rate (Hz)
     INPUT_RATE: 60,           // client fixed input/physics step (Hz)
-    INTERP_DELAY_MS: 100,     // remote entity interpolation delay
-    MAX_REWIND_MS: 300,       // lag compensation cap
+    INTERP_DELAY_MS: 100,     // base remote interpolation delay (client adapts to jitter)
+    MAX_REWIND_MS: 400,       // lag compensation cap
     MAX_PER_TEAM: 5,
     FRIENDLY_FIRE: false,
     WORLD: { X: 64, Y: 16, Z: 64, CHUNK: 16 },
     PLAYER: { RADIUS: 0.3, HEIGHT: 1.8, CROUCH_HEIGHT: 1.3, EYE: 1.62, CROUCH_EYE: 1.15, MAX_HP: 100 },
     MOVE: {
-      RUN_SPEED: 5.6, WALK_MUL: 0.52, CROUCH_MUL: 0.34, SCOPED_MUL: 0.55,
-      GROUND_ACCEL: 7.0, AIR_ACCEL: 12.0, AIR_WISH_CAP: 0.8, MAX_AIR_SPEED: 7.2,
-      FRICTION: 6.0, STOP_SPEED: 2.0, GRAVITY: 22.0, JUMP_VEL: 7.4, MAX_FALL: 30.0
+      RUN_SPEED: 6.7, WALK_MUL: 0.52, CROUCH_MUL: 0.36, SCOPED_MUL: 0.55,
+      GROUND_ACCEL: 10.0, AIR_ACCEL: 12.0, AIR_WISH_CAP: 0.9, MAX_AIR_SPEED: 8.4,
+      FRICTION: 6.2, STOP_SPEED: 2.2, GRAVITY: 22.0, JUMP_VEL: 7.4, MAX_FALL: 30.0
     },
     ROUND: {
-      WARMUP: 12, FREEZE: 12, LIVE: 115, POST: 6, BUY_WINDOW: 20,
-      HALF: 12, WIN: 13, MAX_ROUNDS: 24, GAMEOVER: 12, WARMUP_RESPAWN: 2.5
+      WARMUP: 12, FREEZE: 10, LIVE: 115, POST: 6, BUY_WINDOW: 20,
+      HALF: 12, WIN: 13, MAX_ROUNDS: 24, GAMEOVER: 14, WARMUP_RESPAWN: 2.5
     },
     BOMB: {
       PLANT: 3.2, TIMER: 40, DEFUSE: 10, DEFUSE_KIT: 5, DEFUSE_RANGE: 2.0,
@@ -42,8 +43,37 @@
       LOSS_BASE: 1400, LOSS_STEP: 500, LOSS_MAX: 3400,
       PLANT_TEAM_BONUS: 800, PLANT_REWARD: 300, DEFUSE_REWARD: 300
     },
+    GRENADE: {
+      GRAVITY: 20, THROW_SPEED: 16, LOB_SPEED: 8, BOUNCE: 0.42, FRICTION: 0.72, RADIUS: 0.08,
+      MAX: { he: 1, flash: 2, smoke: 1 }, MAX_TOTAL: 4,
+      he: { fuse: 1.6, radius: 6.5, damage: 98, blockRadius: 2.4 },
+      flash: { fuse: 1.5, range: 34, maxBlind: 3.8 },
+      smoke: { minFuse: 1.2, maxFuse: 3.5, radius: 3.8, duration: 17 }
+    },
     FALL: { SAFE_SPEED: 11.0, DMG_PER: 8.0 },
     PART_MUL: { head: 4.0, chest: 1.0, legs: 0.75 }
+  };
+
+  /*
+   * Difficulty presets. "bot" tunes the AI, the rest tunes the rules of the match.
+   * botDamageMul = damage bots deal to HUMANS (humans always deal full damage).
+   */
+  const DIFFICULTY = {
+    easy: {
+      id: 'easy', label: 'KOLAY', desc: 'Yavaş tepki veren, ıskalayan botlar · bol para · botlar az hasar verir',
+      startMoney: 2400, botDamageMul: 0.55, lossBonusMul: 1.25,
+      bot: { react: [600, 950], aimErr: 0.36, turn: 4.0, head: 0.05, comp: 0.3, burst: [2, 4], pause: [350, 700], fovDot: 0.15, spot: 42, strafe: 0.3, smart: 0.2 }
+    },
+    medium: {
+      id: 'medium', label: 'ORTA', desc: 'Dengeli botlar · klasik rekabetçi ekonomi',
+      startMoney: 1000, botDamageMul: 0.85, lossBonusMul: 1.0,
+      bot: { react: [320, 560], aimErr: 0.18, turn: 7.0, head: 0.12, comp: 0.62, burst: [3, 6], pause: [220, 450], fovDot: -0.2, spot: 58, strafe: 0.6, smart: 0.55 }
+    },
+    hard: {
+      id: 'hard', label: 'ZOR', desc: 'Hızlı nişan alan, sprey kontrolü yapan botlar · CS kuralları birebir',
+      startMoney: 800, botDamageMul: 1.0, lossBonusMul: 1.0,
+      bot: { react: [150, 290], aimErr: 0.07, turn: 11.5, head: 0.26, comp: 0.9, burst: [4, 9], pause: [140, 280], fovDot: -0.5, spot: 72, strafe: 0.9, smart: 0.9 }
+    }
   };
 
   // Input buttons (bitmask)
@@ -52,7 +82,10 @@
   // ---------------------------------------------------------------------------
   // BLOCKS
   // ---------------------------------------------------------------------------
-  const BLOCK = { AIR: 0, GROUND: 1, WALL: 2, CRATE: 3, PLANK: 4, SAND: 5, SITE_A: 6, SITE_B: 7, METAL: 8, BRICK: 9 };
+  const BLOCK = {
+    AIR: 0, GROUND: 1, WALL: 2, CRATE: 3, PLANK: 4, SAND: 5, SITE_A: 6, SITE_B: 7, METAL: 8, BRICK: 9,
+    ASPHALT: 10, CONT_R: 11, CONT_B: 12, CONT_G: 13, SNOW: 14, STONE: 15, WOOD: 16, LEAVES: 17, CONCRETE: 18, ICE: 19
+  };
   // hp: 0 = indestructible
   const BLOCK_INFO = [
     { name: 'air', hp: 0, color: [0, 0, 0] },
@@ -64,7 +97,17 @@
     { name: 'siteA', hp: 0, color: [0.80, 0.36, 0.30] },
     { name: 'siteB', hp: 0, color: [0.34, 0.46, 0.80] },
     { name: 'metal', hp: 0, color: [0.50, 0.55, 0.60] },
-    { name: 'brick', hp: 0, color: [0.66, 0.38, 0.30] }
+    { name: 'brick', hp: 0, color: [0.66, 0.38, 0.30] },
+    { name: 'asphalt', hp: 0, color: [0.34, 0.35, 0.37] },
+    { name: 'containerRed', hp: 0, color: [0.66, 0.22, 0.17] },
+    { name: 'containerBlue', hp: 0, color: [0.20, 0.36, 0.62] },
+    { name: 'containerGreen', hp: 0, color: [0.26, 0.47, 0.30] },
+    { name: 'snow', hp: 0, color: [0.90, 0.93, 0.97] },
+    { name: 'stone', hp: 0, color: [0.53, 0.54, 0.56] },
+    { name: 'wood', hp: 0, color: [0.44, 0.31, 0.20] },
+    { name: 'leaves', hp: 25, color: [0.24, 0.42, 0.30] },
+    { name: 'concrete', hp: 0, color: [0.60, 0.61, 0.62] },
+    { name: 'ice', hp: 0, color: [0.66, 0.82, 0.93] }
   ];
 
   // ---------------------------------------------------------------------------
@@ -155,100 +198,151 @@
   }
 
   // ---------------------------------------------------------------------------
-  // MAP  — "Dustgrid": T spawn south (low z), CT spawn north (high z),
-  // A site west, B site east, mid lane, two tunnels, breakable plank walls.
+  // MAP REGISTRY  (map definitions live in shared/maps.js)
+  // A map: { id, name, desc, theme, spawns:{T,CT}, spawnYaw:{T,CT}, buyZones:{T,CT}, sites:{A,B}, build(world, box) }
   // ---------------------------------------------------------------------------
-  const MAP = {
-    name: 'Dustgrid',
-    spawns: {
-      T: [[26.5, 1, 4.5], [29.5, 1, 4.5], [32.5, 1, 4.5], [35.5, 1, 4.5], [38.5, 1, 4.5],
-          [26.5, 1, 8.5], [29.5, 1, 8.5], [32.5, 1, 8.5], [35.5, 1, 8.5], [38.5, 1, 8.5]],
-      CT: [[26.5, 1, 60.5], [29.5, 1, 60.5], [32.5, 1, 60.5], [35.5, 1, 60.5], [38.5, 1, 60.5],
-           [26.5, 1, 57.5], [29.5, 1, 57.5], [32.5, 1, 57.5], [35.5, 1, 57.5], [38.5, 1, 57.5]]
-    },
-    spawnYaw: { T: Math.PI, CT: 0 },
-    buyZones: { T: { x0: 1, x1: 63, z0: 1, z1: 12 }, CT: { x0: 1, x1: 63, z0: 53, z1: 63 } },
-    sites: { A: { x0: 4, x1: 18, z0: 40, z1: 52 }, B: { x0: 46, x1: 60, z0: 40, z1: 52 } },
-    waypoints: {
-      TS: [32.5, 5.5], TA: [10.5, 9.5], TB: [53.5, 9.5],
-      MID1: [32.5, 14.5], MID2: [31.5, 26.5], MIDB: [35.5, 21.5], MID3: [32.5, 37.5], MID4: [32.5, 46.5], CTS: [32.5, 56.5],
-      AL1: [12.5, 26.5], AL2: [10.5, 37.5], ASITE: [11.5, 46.5], TUNA: [20.5, 26.5],
-      TUNB: [43.5, 21.5], BL1: [55.5, 21.5], BL2: [52.5, 37.5], BSITE: [52.5, 46.5],
-      CTA: [11.5, 56.5], CTB: [53.5, 56.5]
-    },
-    edges: [
-      ['TS', 'TA'], ['TS', 'TB'], ['TS', 'MID1'], ['TA', 'AL1'], ['AL1', 'AL2'], ['AL2', 'ASITE'],
-      ['AL1', 'TUNA'], ['TUNA', 'MID2'], ['MID1', 'MID2'], ['MID2', 'MIDB'], ['MIDB', 'TUNB'], ['TUNB', 'BL1'],
-      ['MID2', 'MID3'], ['MID3', 'MID4'], ['MID4', 'CTS'], ['TB', 'BL1'], ['BL1', 'BL2'], ['BL2', 'BSITE'],
-      ['ASITE', 'CTA'], ['CTA', 'CTS'], ['CTS', 'CTB'], ['CTB', 'BSITE']
-    ]
-  };
-
-  function generateMap(world) {
+  const MAPS = {};
+  const MAP_ORDER = [];
+  function registerMap(def) { if (!MAPS[def.id]) MAP_ORDER.push(def.id); MAPS[def.id] = def; }
+  function getMap(id) { return MAPS[id] || MAPS[MAP_ORDER[0]]; }
+  function nextMapId(id) { const i = MAP_ORDER.indexOf(id); return MAP_ORDER[(i + 1) % MAP_ORDER.length]; }
+  function generateMap(world, mapId) {
     const W = world;
     W.data.fill(0);
     const box = (x0, y0, z0, x1, y1, z1, t) => {
       for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) W.set(x, y, z, t);
     };
-    const B = BLOCK;
-    // Floor + border
-    box(0, 0, 0, 63, 0, 63, B.GROUND);
-    box(0, 1, 0, 63, 9, 0, B.WALL); box(0, 1, 63, 63, 9, 63, B.WALL);
-    box(0, 1, 0, 0, 9, 63, B.WALL); box(63, 1, 0, 63, 9, 63, B.WALL);
-    // Bombsite floors
-    box(5, 0, 42, 16, 0, 50, B.SITE_A);
-    box(47, 0, 42, 58, 0, 50, B.SITE_B);
-    // Big blocks between lanes
-    box(15, 1, 12, 26, 6, 38, B.WALL);
-    box(38, 1, 12, 49, 6, 38, B.WALL);
-    // Brick trims (decor, indestructible)
-    box(15, 6, 12, 26, 6, 12, B.BRICK); box(38, 6, 12, 49, 6, 12, B.BRICK);
-    // Tunnels
-    box(15, 1, 25, 26, 3, 27, B.AIR);
-    box(38, 1, 20, 49, 3, 22, B.AIR);
-    box(15, 4, 24, 15, 4, 28, B.METAL); box(26, 4, 24, 26, 4, 28, B.METAL);
-    box(38, 4, 19, 38, 4, 23, B.METAL); box(49, 4, 19, 49, 4, 23, B.METAL);
-    // Lane narrowing walls
-    box(1, 1, 14, 6, 6, 32, B.WALL);
-    box(57, 1, 14, 62, 6, 32, B.WALL);
-    // Mid doors
-    box(27, 1, 37, 30, 6, 38, B.WALL);
-    box(34, 1, 37, 37, 6, 38, B.WALL);
-    box(31, 4, 37, 33, 6, 38, B.WALL);
-    // Mid → site side walls with breakable plank windows
-    box(27, 1, 39, 28, 6, 43, B.WALL); box(36, 1, 39, 37, 6, 43, B.WALL);
-    box(27, 1, 40, 28, 2, 42, B.PLANK); box(36, 1, 40, 37, 2, 42, B.PLANK);
-    // CT-side blocks
-    box(21, 1, 44, 28, 6, 52, B.WALL); box(36, 1, 44, 43, 6, 52, B.WALL);
-    box(21, 6, 44, 28, 6, 44, B.BRICK); box(36, 6, 44, 43, 6, 44, B.BRICK);
-    // A site cover
-    box(8, 1, 44, 9, 2, 45, B.CRATE);
-    box(13, 1, 47, 14, 1, 48, B.CRATE);
-    box(4, 1, 40, 7, 1, 40, B.SAND);
-    box(15, 1, 50, 16, 1, 51, B.CRATE);
-    // B site cover
-    box(54, 1, 44, 55, 2, 45, B.CRATE);
-    box(49, 1, 47, 50, 1, 48, B.CRATE);
-    box(56, 1, 40, 59, 1, 40, B.SAND);
-    box(47, 1, 50, 48, 1, 51, B.CRATE);
-    // Lane cover
-    box(7, 1, 19, 8, 1, 20, B.CRATE); box(8, 1, 33, 9, 2, 34, B.CRATE);
-    box(34, 1, 17, 35, 2, 18, B.CRATE); box(33, 1, 28, 34, 1, 29, B.CRATE);
-    box(52, 1, 22, 53, 1, 23, B.CRATE); box(54, 1, 34, 55, 2, 35, B.CRATE);
-    // Spawns
-    box(40, 1, 2, 41, 1, 3, B.CRATE);
-    box(18, 1, 57, 19, 1, 58, B.CRATE);
-    box(16, 1, 58, 16, 4, 58, B.METAL); box(48, 1, 58, 48, 4, 58, B.METAL);
-    // Sand bag lines in lanes (destructible)
-    box(12, 1, 11, 14, 1, 11, B.SAND); box(50, 1, 11, 52, 1, 11, B.SAND);
+    getMap(mapId).build(W, box);
     return W;
   }
-
   function inZone(zone, x, z) { return x >= zone.x0 && x <= zone.x1 && z >= zone.z0 && z <= zone.z1; }
-  function siteAt(x, z) {
-    if (inZone(MAP.sites.A, x, z)) return 'A';
-    if (inZone(MAP.sites.B, x, z)) return 'B';
+  function siteAt(map, x, z) {
+    if (inZone(map.sites.A, x, z)) return 'A';
+    if (inZone(map.sites.B, x, z)) return 'B';
     return null;
+  }
+  function siteCenter(map, s) { const z = map.sites[s]; return [(z.x0 + z.x1 + 1) / 2, (z.z0 + z.z1 + 1) / 2]; }
+
+  // ---------------------------------------------------------------------------
+  // NAVIGATION — 2D walkable grid at floor level + A* + string-pulling.
+  // Works on any map automatically (no hand-placed waypoints) and updates
+  // when walls are destroyed.
+  // ---------------------------------------------------------------------------
+  function buildNav(world) {
+    const sx = world.sx, sz = world.sz;
+    const walk = new Uint8Array(sx * sz);
+    const cost = new Float32Array(sx * sz);
+    for (let z = 0; z < sz; z++) for (let x = 0; x < sx; x++) {
+      const ok = world.get(x, 0, z) !== 0 && world.get(x, 1, z) === 0 && world.get(x, 2, z) === 0;
+      walk[z * sx + x] = ok ? 1 : 0;
+    }
+    for (let z = 0; z < sz; z++) for (let x = 0; x < sx; x++) {
+      const i = z * sx + x;
+      if (!walk[i]) continue;
+      let near = 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, nz = z + dz;
+        if (nx < 0 || nz < 0 || nx >= sx || nz >= sz || !walk[nz * sx + nx]) near++;
+      }
+      cost[i] = 1 + (near ? 1.2 : 0);
+    }
+    return { sx, sz, walk, cost };
+  }
+  function nearestWalkable(nav, x, z) {
+    const cx = Math.floor(x), cz = Math.floor(z);
+    for (let r = 0; r < 8; r++) {
+      let best = null, bd = Infinity;
+      for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        const nx = cx + dx, nz = cz + dz;
+        if (nx < 0 || nz < 0 || nx >= nav.sx || nz >= nav.sz || !nav.walk[nz * nav.sx + nx]) continue;
+        const d = Math.hypot(nx + 0.5 - x, nz + 0.5 - z);
+        if (d < bd) { bd = d; best = [nx, nz]; }
+      }
+      if (best) return best;
+    }
+    return null;
+  }
+  /** A* (8-dir, no corner cutting). Returns array of [x,z] cell centres or null. */
+  function findPath(nav, fx, fz, tx, tz) {
+    const s = nearestWalkable(nav, fx, fz), t = nearestWalkable(nav, tx, tz);
+    if (!s || !t) return null;
+    const W = nav.sx, N = nav.sx * nav.sz;
+    const start = s[1] * W + s[0], goal = t[1] * W + t[0];
+    const g = new Float32Array(N).fill(Infinity);
+    const came = new Int32Array(N).fill(-1);
+    const closed = new Uint8Array(N);
+    const heap = [];        // [f, idx] binary min-heap
+    const push = (f, i) => {
+      heap.push([f, i]);
+      let c = heap.length - 1;
+      while (c > 0) { const p = (c - 1) >> 1; if (heap[p][0] <= heap[c][0]) break; const tmp = heap[p]; heap[p] = heap[c]; heap[c] = tmp; c = p; }
+    };
+    const pop = () => {
+      const top = heap[0], last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        let c = 0;
+        for (;;) {
+          const l = c * 2 + 1, r = l + 1;
+          let m = c;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === c) break;
+          const tmp = heap[m]; heap[m] = heap[c]; heap[c] = tmp; c = m;
+        }
+      }
+      return top;
+    };
+    const h = (i) => { const x = i % W, z = (i / W) | 0; const dx = Math.abs(x - t[0]), dz = Math.abs(z - t[1]); return Math.max(dx, dz) + 0.414 * Math.min(dx, dz); };
+    g[start] = 0;
+    push(h(start), start);
+    while (heap.length) {
+      const [, cur] = pop();
+      if (cur === goal) break;
+      if (closed[cur]) continue;
+      closed[cur] = 1;
+      const cx = cur % W, cz = (cur / W) | 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dz) continue;
+        const nx = cx + dx, nz = cz + dz;
+        if (nx < 0 || nz < 0 || nx >= W || nz >= nav.sz) continue;
+        const ni = nz * W + nx;
+        if (!nav.walk[ni] || closed[ni]) continue;
+        if (dx && dz && (!nav.walk[cz * W + nx] || !nav.walk[nz * W + cx])) continue;
+        const ng = g[cur] + (dx && dz ? 1.414 : 1) * nav.cost[ni];
+        if (ng < g[ni]) { g[ni] = ng; came[ni] = cur; push(ng + h(ni), ni); }
+      }
+    }
+    if (came[goal] === -1 && goal !== start) return null;
+    const out = [];
+    for (let c = goal; c !== -1; c = came[c]) { out.push([(c % W) + 0.5, ((c / W) | 0) + 0.5]); if (c === start) break; }
+    out.reverse();
+    return out;
+  }
+  function walkLineClear(world, ax, az, bx, bz) {
+    const d = Math.hypot(bx - ax, bz - az);
+    const n = Math.max(1, Math.ceil(d / 0.2));
+    for (let i = 0; i <= n; i++) {
+      const x = ax + (bx - ax) * i / n, z = az + (bz - az) * i / n;
+      if (boxCollides(world, x, 1, z, 1.8)) return false;
+    }
+    return true;
+  }
+  /** Path from (fx,fz) to (tx,tz) with line-of-walk smoothing. */
+  function navPath(nav, world, fx, fz, tx, tz) {
+    const raw = findPath(nav, fx, fz, tx, tz);
+    if (!raw) return null;
+    const out = [];
+    let ax = fx, az = fz, i = 0;
+    while (i < raw.length) {
+      let j = raw.length - 1;
+      while (j > i && !walkLineClear(world, ax, az, raw[j][0], raw[j][1])) j--;
+      out.push(raw[j]);
+      ax = raw[j][0]; az = raw[j][1];
+      i = j + 1;
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------------------
@@ -415,60 +509,85 @@
     return out;
   }
 
-  const WEAPONS = {
-    knife: {
-      id: 'knife', name: 'Taktik Bıçak', slot: 3, price: 0, damage: 45, armorPen: 0.85, rpm: 110, auto: true,
-      mag: 0, reserve: 0, reload: 0, range: 2.1, rangeMod: 1, penetration: 0, melee: true,
-      spread: 0, moveSpread: 0, jumpSpread: 0, recover: 0.1, speedMul: 1.0, killReward: 1500, drawTime: 0.4,
-      pattern: [[0, 0]], kick: 0
-    },
-    p9: {
-      id: 'p9', name: 'P-9 Striker', slot: 2, team: 'T', price: 200, damage: 28, armorPen: 0.47, rpm: 400, auto: false,
-      mag: 20, reserve: 120, reload: 2.2, range: 80, rangeMod: 0.85, penetration: 1,
-      spread: 0.45, moveSpread: 2.6, jumpSpread: 6, recover: 0.08, speedMul: 0.96, killReward: 300, drawTime: 0.5,
-      pattern: buildPattern(1.0, 0.4, 20, 6), kick: 0.6
-    },
-    p12: {
-      id: 'p12', name: 'P-12 Warden', slot: 2, team: 'CT', price: 200, damage: 35, armorPen: 0.5, rpm: 352, auto: false,
-      mag: 12, reserve: 24, reload: 2.2, range: 80, rangeMod: 0.88, penetration: 1,
-      spread: 0.35, moveSpread: 2.4, jumpSpread: 6, recover: 0.08, speedMul: 0.96, killReward: 300, drawTime: 0.5,
-      pattern: buildPattern(1.1, 0.4, 12, 6), kick: 0.65
-    },
-    hc50: {
-      id: 'hc50', name: 'HC-50 Hand Cannon', slot: 2, price: 700, damage: 53, armorPen: 0.93, rpm: 267, auto: false,
-      mag: 7, reserve: 35, reload: 2.2, range: 90, rangeMod: 0.86, penetration: 2,
-      spread: 0.55, moveSpread: 5, jumpSpread: 9, recover: 0.13, speedMul: 0.92, killReward: 300, drawTime: 0.6,
-      pattern: buildPattern(2.6, 0.8, 7, 4), kick: 1.4
-    },
-    viper: {
-      id: 'viper', name: 'Viper SMG', slot: 1, price: 1250, damage: 26, armorPen: 0.6, rpm: 857, auto: true,
-      mag: 30, reserve: 120, reload: 2.1, range: 60, rangeMod: 0.87, penetration: 1,
-      spread: 0.9, moveSpread: 1.6, jumpSpread: 5, recover: 0.04, speedMul: 0.96, killReward: 600, drawTime: 0.6,
-      pattern: buildPattern(0.38, 1.6, 30, 10), kick: 0.35
-    },
-    krait: {
-      id: 'krait', name: 'Krait AR-7', slot: 1, team: 'T', price: 2700, damage: 36, armorPen: 0.775, rpm: 600, auto: true,
-      mag: 30, reserve: 90, reload: 2.45, range: 120, rangeMod: 0.98, penetration: 2,
-      spread: 0.3, moveSpread: 6, jumpSpread: 10, recover: 0.05, speedMul: 0.86, killReward: 300, drawTime: 0.9,
-      pattern: buildPattern(0.6, 2.6, 30, 9), kick: 0.55
-    },
-    sentinel: {
-      id: 'sentinel', name: 'Sentinel M4', slot: 1, team: 'CT', price: 2900, damage: 33, armorPen: 0.7, rpm: 666, auto: true,
-      mag: 30, reserve: 90, reload: 3.1, range: 120, rangeMod: 0.97, penetration: 2,
-      spread: 0.28, moveSpread: 5.5, jumpSpread: 10, recover: 0.05, speedMul: 0.88, killReward: 300, drawTime: 0.9,
-      pattern: buildPattern(0.5, 2.2, 30, 9), kick: 0.48
-    },
-    longshot: {
-      id: 'longshot', name: 'Longshot .338', slot: 1, price: 4750, damage: 115, armorPen: 0.97, rpm: 41, auto: false,
-      mag: 5, reserve: 30, reload: 3.7, range: 200, rangeMod: 0.99, penetration: 3,
-      spread: 0.04, unscopedSpread: 7, moveSpread: 12, jumpSpread: 16, recover: 0.3, speedMul: 0.8, killReward: 100,
-      drawTime: 1.1, pattern: buildPattern(3.5, 0.6, 5, 2), kick: 2.2, scope: [40, 15]
-    }
+  const BASE_W = {
+    team: null, armorPen: 0.5, auto: false, mag: 0, reserve: 0, reload: 0, range: 80, rangeMod: 0.9, penetration: 0,
+    spread: 0, moveSpread: 0, jumpSpread: 0, recover: 0.1, speedMul: 1, killReward: 300, drawTime: 0.6,
+    pattern: [[0, 0]], kick: 0, pellets: 1, melee: false, grenade: null, scope: null, unscopedSpread: 0
   };
+  function W(def) { return Object.assign({}, BASE_W, def); }
+
+  const WEAPONS = {
+    knife: W({ id: 'knife', name: 'Taktik Bıçak', cat: 'knife', slot: 3, price: 0, damage: 45, armorPen: 0.85, rpm: 110, auto: true,
+      range: 2.1, rangeMod: 1, melee: true, killReward: 1500, drawTime: 0.4 }),
+
+    // --- Pistols (slot 2)
+    p9: W({ id: 'p9', name: 'P-9 Striker', cat: 'pistol', slot: 2, team: 'T', price: 200, damage: 28, armorPen: 0.47, rpm: 400,
+      mag: 20, reserve: 120, reload: 2.2, rangeMod: 0.85, penetration: 1, spread: 0.45, moveSpread: 2.6, jumpSpread: 6,
+      recover: 0.08, speedMul: 0.96, drawTime: 0.5, pattern: buildPattern(1.0, 0.4, 20, 6), kick: 0.6 }),
+    p12: W({ id: 'p12', name: 'P-12 Warden', cat: 'pistol', slot: 2, team: 'CT', price: 200, damage: 35, armorPen: 0.5, rpm: 352,
+      mag: 12, reserve: 24, reload: 2.2, rangeMod: 0.88, penetration: 1, spread: 0.35, moveSpread: 2.4, jumpSpread: 6,
+      recover: 0.08, speedMul: 0.96, drawTime: 0.5, pattern: buildPattern(1.1, 0.4, 12, 6), kick: 0.65 }),
+    vex: W({ id: 'vex', name: 'Vex-75 Otomatik', cat: 'pistol', slot: 2, price: 500, damage: 31, armorPen: 0.77, rpm: 600, auto: true,
+      mag: 12, reserve: 24, reload: 2.7, range: 60, rangeMod: 0.85, penetration: 1, spread: 0.55, moveSpread: 2.4, jumpSpread: 6,
+      recover: 0.07, speedMul: 0.96, killReward: 100, drawTime: 0.5, pattern: buildPattern(0.75, 1.2, 12, 6), kick: 0.5 }),
+    hc50: W({ id: 'hc50', name: 'HC-50 Hand Cannon', cat: 'pistol', slot: 2, price: 700, damage: 53, armorPen: 0.93, rpm: 267,
+      mag: 7, reserve: 35, reload: 2.2, range: 90, rangeMod: 0.86, penetration: 2, spread: 0.55, moveSpread: 5, jumpSpread: 9,
+      recover: 0.13, speedMul: 0.92, pattern: buildPattern(2.6, 0.8, 7, 4), kick: 1.4 }),
+
+    // --- SMGs (slot 1)
+    viper: W({ id: 'viper', name: 'Viper SMG', cat: 'smg', slot: 1, price: 1250, damage: 26, armorPen: 0.6, rpm: 857, auto: true,
+      mag: 30, reserve: 120, reload: 2.1, range: 60, rangeMod: 0.87, penetration: 1, spread: 0.9, moveSpread: 1.6, jumpSpread: 5,
+      recover: 0.04, speedMul: 0.96, killReward: 600, pattern: buildPattern(0.38, 1.6, 30, 10), kick: 0.35 }),
+    wasp: W({ id: 'wasp', name: 'Wasp-7 PDW', cat: 'smg', slot: 1, price: 1500, damage: 29, armorPen: 0.65, rpm: 750, auto: true,
+      mag: 30, reserve: 120, reload: 3.1, range: 70, rangeMod: 0.85, penetration: 1, spread: 0.6, moveSpread: 1.8, jumpSpread: 5,
+      recover: 0.04, speedMul: 0.95, killReward: 600, pattern: buildPattern(0.42, 1.7, 30, 10), kick: 0.38 }),
+    hornet: W({ id: 'hornet', name: 'Hornet P50', cat: 'smg', slot: 1, price: 2350, damage: 26, armorPen: 0.69, rpm: 857, auto: true,
+      mag: 50, reserve: 100, reload: 3.3, range: 70, rangeMod: 0.86, penetration: 1, spread: 0.7, moveSpread: 1.9, jumpSpread: 5,
+      recover: 0.035, speedMul: 0.94, drawTime: 0.7, pattern: buildPattern(0.33, 1.9, 50, 12), kick: 0.32 }),
+
+    // --- Heavy (slot 1)
+    breacher: W({ id: 'breacher', name: 'Breacher Pompalı', cat: 'heavy', slot: 1, price: 1050, damage: 26, pellets: 9, armorPen: 0.5, rpm: 68,
+      mag: 8, reserve: 32, reload: 3.2, range: 30, rangeMod: 0.75, spread: 3.4, moveSpread: 1, jumpSpread: 3,
+      recover: 0.3, speedMul: 0.88, killReward: 900, drawTime: 0.8, pattern: buildPattern(2.5, 0.5, 8, 2), kick: 1.6 }),
+    mauler: W({ id: 'mauler', name: 'Mauler Oto-Pompalı', cat: 'heavy', slot: 1, price: 2000, damage: 20, pellets: 6, armorPen: 0.8, rpm: 171, auto: true,
+      mag: 7, reserve: 32, reload: 3.0, range: 28, rangeMod: 0.75, spread: 3.8, moveSpread: 1, jumpSpread: 3,
+      recover: 0.2, speedMul: 0.86, killReward: 900, drawTime: 0.9, pattern: buildPattern(1.6, 0.6, 7, 3), kick: 1.2 }),
+    titan: W({ id: 'titan', name: 'Titan M60 LMG', cat: 'heavy', slot: 1, price: 5200, damage: 32, armorPen: 0.8, rpm: 750, auto: true,
+      mag: 100, reserve: 200, reload: 5.7, range: 110, rangeMod: 0.97, penetration: 2, spread: 0.8, moveSpread: 7, jumpSpread: 12,
+      recover: 0.05, speedMul: 0.78, drawTime: 1.1, pattern: buildPattern(0.55, 2.8, 100, 10), kick: 0.5 }),
+
+    // --- Rifles (slot 1)
+    falcon: W({ id: 'falcon', name: 'Falcon G-35', cat: 'rifle', slot: 1, team: 'T', price: 1800, damage: 30, armorPen: 0.775, rpm: 666, auto: true,
+      mag: 35, reserve: 90, reload: 3.0, range: 110, rangeMod: 0.98, penetration: 2, spread: 0.38, moveSpread: 6, jumpSpread: 10,
+      recover: 0.05, speedMul: 0.86, drawTime: 0.9, pattern: buildPattern(0.52, 2.3, 35, 9), kick: 0.5 }),
+    lynx: W({ id: 'lynx', name: 'Lynx F-25', cat: 'rifle', slot: 1, team: 'CT', price: 2050, damage: 30, armorPen: 0.7, rpm: 666, auto: true,
+      mag: 25, reserve: 90, reload: 3.3, range: 110, rangeMod: 0.96, penetration: 2, spread: 0.36, moveSpread: 6, jumpSpread: 10,
+      recover: 0.05, speedMul: 0.88, drawTime: 0.9, pattern: buildPattern(0.5, 2.0, 25, 9), kick: 0.48 }),
+    krait: W({ id: 'krait', name: 'Krait AR-7', cat: 'rifle', slot: 1, team: 'T', price: 2700, damage: 36, armorPen: 0.775, rpm: 600, auto: true,
+      mag: 30, reserve: 90, reload: 2.45, range: 120, rangeMod: 0.98, penetration: 2, spread: 0.3, moveSpread: 6, jumpSpread: 10,
+      recover: 0.05, speedMul: 0.86, drawTime: 0.9, pattern: buildPattern(0.6, 2.6, 30, 9), kick: 0.55 }),
+    sentinel: W({ id: 'sentinel', name: 'Sentinel M4', cat: 'rifle', slot: 1, team: 'CT', price: 2900, damage: 33, armorPen: 0.7, rpm: 666, auto: true,
+      mag: 30, reserve: 90, reload: 3.1, range: 120, rangeMod: 0.97, penetration: 2, spread: 0.28, moveSpread: 5.5, jumpSpread: 10,
+      recover: 0.05, speedMul: 0.88, drawTime: 0.9, pattern: buildPattern(0.5, 2.2, 30, 9), kick: 0.48 }),
+    ranger: W({ id: 'ranger', name: 'Ranger SSG', cat: 'sniper', slot: 1, price: 1700, damage: 88, armorPen: 0.85, rpm: 48,
+      mag: 10, reserve: 90, reload: 3.7, range: 200, rangeMod: 0.99, penetration: 3, spread: 0.05, unscopedSpread: 4.5, moveSpread: 8, jumpSpread: 7,
+      recover: 0.25, speedMul: 0.92, drawTime: 1.0, pattern: buildPattern(3.0, 0.5, 10, 2), kick: 1.8, scope: [40, 15] }),
+    longshot: W({ id: 'longshot', name: 'Longshot .338', cat: 'sniper', slot: 1, price: 4750, damage: 115, armorPen: 0.97, rpm: 41,
+      mag: 5, reserve: 30, reload: 3.7, range: 200, rangeMod: 0.99, penetration: 3, spread: 0.04, unscopedSpread: 7, moveSpread: 12, jumpSpread: 16,
+      recover: 0.3, speedMul: 0.8, killReward: 100, drawTime: 1.1, pattern: buildPattern(3.5, 0.6, 5, 2), kick: 2.2, scope: [40, 15] }),
+
+    // --- Grenades (slot 4)
+    he: W({ id: 'he', name: 'HE Bombası', cat: 'grenade', slot: 4, price: 300, grenade: 'he', rpm: 60, drawTime: 0.5 }),
+    flash: W({ id: 'flash', name: 'Flaş Bombası', cat: 'grenade', slot: 4, price: 200, grenade: 'flash', rpm: 60, drawTime: 0.5 }),
+    smoke: W({ id: 'smoke', name: 'Sis Bombası', cat: 'grenade', slot: 4, price: 300, grenade: 'smoke', rpm: 60, drawTime: 0.5 })
+  };
+  const GRENADE_ORDER = ['he', 'flash', 'smoke'];
   const BUY_LIST = {
-    pistols: ['p9', 'p12', 'hc50'],
-    smg: ['viper'],
-    rifles: ['krait', 'sentinel', 'longshot'],
+    pistols: ['p9', 'p12', 'vex', 'hc50'],
+    heavy: ['breacher', 'mauler', 'titan'],
+    smg: ['viper', 'wasp', 'hornet'],
+    rifles: ['falcon', 'lynx', 'krait', 'sentinel', 'ranger', 'longshot'],
+    grenades: ['he', 'flash', 'smoke'],
     gear: ['kevlar', 'helmet', 'defuse']
   };
   const ITEMS = {
@@ -491,7 +610,7 @@
     return Math.max(0, idx - (sinceMs - delay) / (w.recover * 1000));
   }
   function getSpread(w, speed, onGround, crouch, scoped) {
-    if (w.melee) return 0;
+    if (w.melee || w.grenade) return 0;
     let s = w.spread;
     if (w.scope && !scoped) s += w.unscopedSpread;
     const moveFrac = clamp(speed / (CONFIG.MOVE.RUN_SPEED * w.speedMul), 0, 1.3);
@@ -508,17 +627,81 @@
     const offPitch = Math.sin(a) * r + recoil[1];
     return anglesToDir(yaw - offYaw * DEG, clamp(pitch + offPitch * DEG, -1.55, 1.55));
   }
+  /** All pellet directions of one trigger pull (1 for normal guns). Shotgun pellets use a uniform ring. */
+  function shotDirections(w, yaw, pitch, recoil, spreadDeg, playerNum, seq) {
+    if (w.pellets <= 1) return [computeShotDirection(yaw, pitch, recoil, spreadDeg, shotSeed(playerNum, seq))];
+    const out = [];
+    for (let k = 0; k < w.pellets; k++) {
+      const rng = mulberry32(shotSeed(playerNum, seq * 16 + k));
+      const a = (k / w.pellets) * Math.PI * 2 + rng() * 0.6;
+      const r = spreadDeg * (0.35 + rng() * 0.65) * (k === 0 ? 0.2 : 1);
+      out.push(anglesToDir(yaw - (Math.cos(a) * r + recoil[0]) * DEG, clamp(pitch + (Math.sin(a) * r + recoil[1]) * DEG, -1.55, 1.55)));
+    }
+    return out;
+  }
   function weaponSpeedMul(weaponId, scoped) {
     const w = WEAPONS[weaponId] || WEAPONS.knife;
     return w.speedMul * (scoped ? CONFIG.MOVE.SCOPED_MUL : 1);
   }
 
+  // ---------------------------------------------------------------------------
+  // GRENADE PHYSICS (server authoritative; shared so bots/tests can predict)
+  // ---------------------------------------------------------------------------
+  function stepGrenade(g, dt, world) {
+    const G = CONFIG.GRENADE;
+    g.vy -= G.GRAVITY * dt;
+    let bounced = false;
+    const steps = Math.max(1, Math.ceil(Math.hypot(g.vx, g.vy, g.vz) * dt / 0.2));
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      for (const ax of ['x', 'y', 'z']) {
+        const vk = 'v' + ax;
+        const old = g[ax];
+        g[ax] += g[vk] * h;
+        if (world.isSolid(Math.floor(g.x), Math.floor(g.y), Math.floor(g.z))) {
+          g[ax] = old;
+          g[vk] = -g[vk] * G.BOUNCE;
+          if (ax === 'y') { g.vx *= G.FRICTION; g.vz *= G.FRICTION; }
+          else { g.vy *= 0.9; }
+          if (Math.abs(g[vk]) > 1.2) bounced = true;
+        }
+      }
+    }
+    g.rest = Math.hypot(g.vx, g.vy, g.vz) < 0.35 && world.isSolid(Math.floor(g.x), Math.floor(g.y - 0.15), Math.floor(g.z));
+    if (g.rest) { g.vx = g.vy = g.vz = 0; }
+    return bounced;
+  }
+  /** true if the straight segment a→b is not blocked by any solid voxel */
+  function lineClear(world, a, b) {
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const len = Math.hypot(d[0], d[1], d[2]);
+    if (len < 1e-4) return true;
+    return !world.raycast(a, [d[0] / len, d[1] / len, d[2] / len], len - 0.05);
+  }
+  /** true if any smoke cloud intersects the segment a→b */
+  function smokeBlocks(smokes, a, b, now) {
+    if (!smokes || !smokes.length) return false;
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] || 1;
+    for (const s of smokes) {
+      const age = (now - s.t0) / 1000;
+      if (age < 0.6 || age > CONFIG.GRENADE.smoke.duration) continue;
+      const r = CONFIG.GRENADE.smoke.radius * Math.min(1, age / 1.5) * (age > CONFIG.GRENADE.smoke.duration - 2 ? (CONFIG.GRENADE.smoke.duration - age) / 2 : 1);
+      const t = clamp(((s.x - a[0]) * d[0] + (s.y - a[1]) * d[1] + (s.z - a[2]) * d[2]) / len2, 0, 1);
+      const px = a[0] + d[0] * t - s.x, py = a[1] + d[1] * t - s.y, pz = a[2] + d[2] * t - s.z;
+      if (px * px + py * py * 2.5 + pz * pz < r * r) return true;
+    }
+    return false;
+  }
+
   return {
-    CONFIG, BTN, BLOCK, BLOCK_INFO, MAP, WEAPONS, ITEMS, BUY_LIST, DEG,
+    CONFIG, DIFFICULTY, BTN, BLOCK, BLOCK_INFO, WEAPONS, ITEMS, BUY_LIST, GRENADE_ORDER, DEG,
     clamp, lerp, wrapAngle, lerpAngle, anglesToDir, dirToAngles, mulberry32, shotSeed, hash3,
-    VoxelWorld, generateMap, inZone, siteAt,
+    VoxelWorld, MAPS, MAP_ORDER, registerMap, getMap, nextMapId, generateMap, inZone, siteAt, siteCenter,
+    buildNav, findPath, navPath, nearestWalkable, walkLineClear,
     playerHeight, eyeHeight, boxCollides, stepPlayer,
     getHitboxes, rayAABB,
-    getRecoil, recoilIndexAt, getSpread, computeShotDirection, weaponSpeedMul
+    getRecoil, recoilIndexAt, getSpread, computeShotDirection, shotDirections, weaponSpeedMul,
+    stepGrenade, lineClear, smokeBlocks
   };
 });

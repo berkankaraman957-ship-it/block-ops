@@ -112,6 +112,124 @@ export function buildGun(id) {
       fore = [0, -0.07, 0.02]; kind = 'pistol';
       break;
     }
+    case 'falcon': case 'lynx': {
+      const lynx = id === 'lynx';
+      const body = lynx ? 0x3b4048 : 0x5a5136, dark = 0x1f1f1f;
+      if (lynx) {
+        // bullpup: mag behind the grip, carry handle on top
+        g.box(0.06, 0.1, 0.5, 0, 0.03, 0.0, body);
+        g.box(0.03, 0.05, 0.32, 0, 0.11, -0.04, dark);
+        g.box(0.022, 0.022, 0.2, 0, 0.045, -0.36, dark);
+        g.box(0.035, 0.035, 0.05, 0, 0.045, -0.47, 0x111111);
+        g.box(0.07, 0.03, 0.12, 0, -0.03, -0.18, dark);
+        grip(dark, -0.05);
+        mag = g.add(new Node('mag')); mag.pos = [0, -0.03, 0.12]; mag.rot = [0.1, 0, 0];
+        mag.box(0.04, 0.13, 0.065, 0, -0.06, 0, 0x2b2b2b);
+        muzzle = [0, 0.045, -0.5]; fore = [0, -0.04, -0.2];
+      } else {
+        g.box(0.06, 0.08, 0.36, 0, 0.02, -0.08, body);
+        g.box(0.024, 0.024, 0.3, 0, 0.045, -0.4, dark);
+        g.box(0.068, 0.066, 0.18, 0, 0.03, -0.3, 0x6b5b3a);
+        g.box(0.012, 0.05, 0.012, 0, 0.085, -0.52, dark);
+        g.box(0.03, 0.06, 0.24, 0, 0.0, 0.2, 0x3a3428);
+        g.box(0.05, 0.1, 0.03, 0, -0.01, 0.32, 0x2a2620);
+        grip(dark);
+        mag = g.add(new Node('mag')); mag.pos = [0, -0.04, -0.12]; mag.rot = [0.28, 0, 0];
+        mag.box(0.045, 0.2, 0.07, 0, -0.09, 0, 0x2b2b2b);
+        muzzle = [0, 0.045, -0.58]; fore = [0, -0.005, -0.3];
+      }
+      break;
+    }
+    case 'ranger': {
+      g.box(0.055, 0.075, 0.42, 0, 0.03, -0.05, 0x2e3a4a);
+      g.box(0.026, 0.026, 0.5, 0, 0.045, -0.5, 0x1a1a1a);
+      g.box(0.04, 0.04, 0.24, 0, 0.12, -0.06, 0x101010);
+      g.box(0.052, 0.052, 0.04, 0, 0.12, -0.19, 0x101010); g.box(0.052, 0.052, 0.04, 0, 0.12, 0.07, 0x101010);
+      g.box(0.036, 0.036, 0.004, 0, 0.12, -0.212, 0x3a7bd5, 0.9);
+      g.box(0.06, 0.016, 0.016, 0.045, 0.05, 0.06, 0x9a9a9a);
+      g.box(0.055, 0.11, 0.26, 0, -0.01, 0.26, 0x2e3a4a);
+      grip(0x1d1f22, 0.07);
+      mag = g.add(new Node('mag')); mag.pos = [0, -0.02, -0.06];
+      mag.box(0.04, 0.07, 0.07, 0, -0.035, 0, 0x1d1f22);
+      muzzle = [0, 0.045, -0.76]; fore = [0, -0.0, -0.28]; kind = 'sniper';
+      break;
+    }
+    case 'wasp': case 'hornet': {
+      const hornet = id === 'hornet';
+      if (hornet) {
+        g.box(0.07, 0.12, 0.44, 0, 0.02, -0.02, 0x30352e);
+        g.box(0.05, 0.03, 0.34, 0, 0.1, -0.04, 0x1f1f1f);          // top mag
+        g.box(0.03, 0.03, 0.08, 0, 0.04, -0.27, 0x151515);
+        g.box(0.06, 0.05, 0.05, 0, -0.06, -0.12, 0x30352e);
+        g.box(0.04, 0.09, 0.05, 0, -0.06, 0.02, 0x1f1f1f);
+        mag = g.add(new Node('mag')); mag.pos = [0, 0.12, -0.04];
+        mag.box(0.048, 0.025, 0.3, 0, 0, 0, 0x2a3a2a);
+        muzzle = [0, 0.04, -0.31]; fore = [0, -0.06, -0.12];
+      } else {
+        g.box(0.05, 0.08, 0.28, 0, 0.03, -0.06, 0x2a2c2e);
+        g.box(0.02, 0.02, 0.1, 0, 0.045, -0.25, 0x151515);
+        g.box(0.03, 0.015, 0.2, 0, 0.08, -0.06, 0x111111);
+        g.box(0.025, 0.04, 0.2, 0, 0.02, 0.15, 0x1b1b1b);
+        g.box(0.03, 0.05, 0.04, 0, -0.03, -0.2, 0x1b1b1b);
+        const gr = g.add(new Node('grip')); gr.pos = [0, -0.02, 0.0]; gr.rot = [0.18, 0, 0];
+        gr.box(0.04, 0.11, 0.05, 0, -0.05, 0, 0x1b1b1b);
+        mag = gr.add(new Node('mag')); mag.pos = [0, -0.1, 0];
+        mag.box(0.034, 0.08, 0.044, 0, -0.03, 0, 0x2b2b2b);
+        muzzle = [0, 0.045, -0.31]; fore = [0, -0.04, -0.2];
+      }
+      kind = 'smg';
+      break;
+    }
+    case 'breacher': case 'mauler': {
+      const auto = id === 'mauler';
+      g.box(0.06, 0.08, 0.3, 0, 0.03, -0.02, auto ? 0x2a2a2a : 0x3a3a3a);
+      g.box(0.03, 0.03, 0.46, 0, 0.06, -0.38, 0x1d1d1d);
+      g.box(0.032, 0.032, 0.4, 0, 0.025, -0.34, 0x2a2a2a);              // tube
+      const pump = g.add(new Node('pump')); pump.pos = [0, 0.02, -0.34];
+      pump.box(0.06, 0.055, 0.14, 0, 0, 0, auto ? 0x3a3a3a : 0x6b4a2a);
+      g.box(0.055, 0.085, 0.26, 0, 0.0, 0.22, auto ? 0x222222 : 0x6b4a2a);
+      grip(auto ? 0x1b1b1b : 0x4a3220);
+      if (auto) { mag = g.add(new Node('mag')); mag.pos = [0, -0.04, -0.1]; mag.box(0.05, 0.11, 0.08, 0, -0.04, 0, 0x2b2b2b); }
+      muzzle = [0, 0.06, -0.62]; fore = [0, -0.02, -0.34]; kind = 'shotgun';
+      break;
+    }
+    case 'titan': {
+      g.box(0.08, 0.1, 0.42, 0, 0.03, -0.05, 0x3b3f36);
+      g.box(0.035, 0.035, 0.42, 0, 0.05, -0.47, 0x1a1a1a);
+      g.box(0.05, 0.05, 0.08, 0, 0.05, -0.7, 0x111111);
+      g.box(0.06, 0.03, 0.3, 0, 0.1, -0.08, 0x23251f);
+      g.box(0.07, 0.07, 0.2, 0, 0.03, -0.32, 0x23251f);
+      g.box(0.01, 0.12, 0.01, 0.03, -0.06, -0.55, 0x222222); g.box(0.01, 0.12, 0.01, -0.03, -0.06, -0.55, 0x222222);
+      g.box(0.055, 0.1, 0.24, 0, 0.0, 0.25, 0x3b3f36);
+      grip(0x1b1b1b);
+      mag = g.add(new Node('mag')); mag.pos = [0, -0.04, -0.08];
+      mag.box(0.12, 0.13, 0.12, -0.03, -0.07, 0, 0x4a5a3a);
+      mag.box(0.02, 0.04, 0.08, 0.04, 0.02, 0, 0xb08a3a);   // belt
+      muzzle = [0, 0.05, -0.75]; fore = [0, -0.02, -0.3]; kind = 'lmg';
+      break;
+    }
+    case 'vex': {
+      g.box(0.036, 0.045, 0.2, 0, 0.045, -0.06, 0x2d3036);
+      g.box(0.032, 0.025, 0.17, 0, 0.012, -0.05, 0x3d4a3a);
+      const gr = g.add(new Node('grip')); gr.pos = [0, 0, 0.025]; gr.rot = [0.25, 0, 0];
+      gr.box(0.032, 0.1, 0.05, 0, -0.055, 0, 0x3d4a3a);
+      mag = gr.add(new Node('mag')); mag.pos = [0, -0.1, 0];
+      mag.box(0.028, 0.06, 0.044, 0, -0.02, 0, 0x151515);
+      muzzle = [0, 0.045, -0.17]; fore = [0, -0.07, 0.02]; kind = 'pistol';
+      break;
+    }
+    case 'he': case 'flash': case 'smoke': {
+      const col = id === 'he' ? 0x3c4a2e : id === 'flash' ? 0x8a8f96 : 0x5a6a7a;
+      if (id === 'he') g.box(0.075, 0.08, 0.075, 0, 0.0, 0, col);
+      else g.box(0.06, 0.12, 0.06, 0, 0.02, 0, col);
+      g.box(0.035, 0.025, 0.035, 0, id === 'he' ? 0.05 : 0.09, 0, 0x777777);
+      g.box(0.012, 0.06, 0.018, 0.03, id === 'he' ? 0.03 : 0.06, 0.0, 0x999999);   // spoon
+      const pin = g.add(new Node('pin')); pin.pos = [-0.025, id === 'he' ? 0.065 : 0.105, 0];
+      pin.box(0.03, 0.03, 0.006, 0, 0, 0, 0xc0c0c0);
+      if (id !== 'he') g.box(0.062, 0.02, 0.062, 0, -0.02, 0, id === 'flash' ? 0xe0e0e0 : 0x8aa0b0);
+      muzzle = [0, 0, 0]; fore = [0, -0.03, 0.02]; kind = 'grenade';
+      break;
+    }
     default: { // knife
       g.box(0.03, 0.035, 0.12, 0, 0, 0.03, 0x1b1b1b);
       g.box(0.032, 0.008, 0.11, 0, 0.0, 0.03, 0x3a3a3a);
@@ -256,4 +374,52 @@ export class Avatar {
     }
     r.update(null);
   }
+}
+
+/**
+ * Side-view silhouette icon of a weapon (PNG data URL) generated from its voxel model.
+ * Used in the kill feed, buy menu and HUD.
+ */
+const iconCache = {};
+export function weaponIcon(id, color) {
+  const key = id + (color || '');
+  if (iconCache[key]) return iconCache[key];
+  const gun = buildGun(id);
+  gun.root.update(null);
+  const rects = [];
+  const walk = (n) => {
+    if (n.visible === false) return;
+    for (const b of n.boxes) {
+      const m = n.world;
+      // project the 4 side corners (z → x axis, y → y axis)
+      const pts = [];
+      for (const sy of [-0.5, 0.5]) for (const sz of [-0.5, 0.5]) {
+        const lx = b.o[0], ly = b.o[1] + sy * b.s[1], lz = b.o[2] + sz * b.s[2];
+        pts.push([m[2] * lx + m[6] * ly + m[10] * lz + m[14], m[1] * lx + m[5] * ly + m[9] * lz + m[13]]);
+      }
+      rects.push(pts);
+    }
+    for (const c of n.children) walk(c);
+  };
+  walk(gun.root);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const r of rects) for (const [x, y] of r) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+  const W = 120, H = 44, pad = 3;
+  const sc = Math.min((W - pad * 2) / (maxX - minX || 1), (H - pad * 2) / (maxY - minY || 1));
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = color || '#ffffff';
+  const ox = (W - (maxX - minX) * sc) / 2, oy = (H - (maxY - minY) * sc) / 2;
+  for (const r of rects) {
+    ctx.beginPath();
+    // order corners to a quad: (0,0),(0,1),(1,1),(1,0)
+    const q = [r[0], r[1], r[3], r[2]];
+    q.forEach(([x, y], i) => {
+      const px = W - (ox + (x - minX) * sc), py = H - (oy + (y - minY) * sc);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.closePath(); ctx.fill();
+  }
+  return (iconCache[key] = cv.toDataURL());
 }

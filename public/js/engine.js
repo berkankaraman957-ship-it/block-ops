@@ -63,6 +63,25 @@ export const M4 = {
     o[15] = 1;
     return o;
   },
+  invert(o, a) {
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3], a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+    const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11], a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
+    const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12, b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
+    const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if (!det) return null;
+    det = 1 / det;
+    o[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det; o[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+    o[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det; o[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+    o[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det; o[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+    o[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det; o[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+    o[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det; o[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+    o[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det; o[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+    o[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det; o[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+    o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det; o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+    return o;
+  },
   transformPoint(m, x, y, z) {
     const w = m[3] * x + m[7] * y + m[11] * z + m[15];
     return [(m[0] * x + m[4] * y + m[8] * z + m[12]) / w, (m[1] * x + m[5] * y + m[9] * z + m[13]) / w, (m[2] * x + m[6] * y + m[10] * z + m[14]) / w, w];
@@ -243,6 +262,31 @@ uniform vec3 uFogCol;
 out vec4 o;
 void main() { o = vec4(mix(vCol.rgb, uFogCol, vFog), vCol.a); }`;
 
+const SKY_VS = `#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vNdc;
+void main() { vNdc = aPos; gl_Position = vec4(aPos, 0.9999, 1.0); }`;
+const SKY_FS = `#version 300 es
+precision mediump float;
+in vec2 vNdc;
+uniform mat4 uInvVP;
+uniform vec3 uCam;
+uniform vec3 uZenith;
+uniform vec3 uHorizon;
+uniform vec3 uSun;
+uniform vec3 uSunCol;
+out vec4 o;
+void main() {
+  vec4 p = uInvVP * vec4(vNdc, 1.0, 1.0);
+  vec3 d = normalize(p.xyz / p.w - uCam);
+  float h = clamp(d.y, -0.2, 1.0);
+  vec3 c = mix(uHorizon, uZenith, pow(max(h, 0.0), 0.55));
+  c = mix(c, uHorizon * 0.82, clamp(-h * 5.0, 0.0, 1.0));
+  float sd = max(dot(d, uSun), 0.0);
+  c += uSunCol * (pow(sd, 900.0) * 3.0 + pow(sd, 18.0) * 0.28 + pow(sd, 3.0) * 0.06);
+  o = vec4(c, 1.0);
+}`;
+
 // Unit cube, per-face normals
 function cubeGeometry() {
   const P = [], N = [], I = [];
@@ -379,6 +423,15 @@ export class Renderer {
     this.gl = gl;
     this.pixelRatio = opts.pixelRatio || 1;
     this.worldProg = program(gl, WORLD_VS, WORLD_FS);
+    this.skyProg = program(gl, SKY_VS, SKY_FS);
+    this.skyVao = gl.createVertexArray();
+    gl.bindVertexArray(this.skyVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3])));
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    this.invVP = M4.create();
+    this.zeroLights = new Float32Array(16);
+    this.theme = { zenith: [0.36, 0.58, 0.88], horizon: [0.88, 0.85, 0.76], sunColor: [1, 0.95, 0.82], ambient: 0.56 };
     this.boxProg = program(gl, BOX_VS, BOX_FS);
     const cube = cubeGeometry();
     this.cube = {
@@ -407,6 +460,32 @@ export class Renderer {
     if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
     this.gl.viewport(0, 0, w, h);
     this.aspect = w / h;
+  }
+  setTheme(t) {
+    this.theme = t;
+    this.fogColor = t.horizon.slice();
+    this.fog = t.fog.slice();
+    this.sun = normalize3(t.sun);
+  }
+  setPixelRatio(r) { this.pixelRatio = r; this.resize(); }
+  drawSky(vp, cam) {
+    const gl = this.gl, P = this.skyProg;
+    if (!M4.invert(this.invVP, vp)) return;
+    gl.useProgram(P.p);
+    gl.uniformMatrix4fv(P.u.uInvVP, false, this.invVP);
+    gl.uniform3fv(P.u.uCam, cam);
+    gl.uniform3fv(P.u.uZenith, this.theme.zenith);
+    gl.uniform3fv(P.u.uHorizon, this.theme.horizon);
+    gl.uniform3fv(P.u.uSun, this.sun);
+    gl.uniform3fv(P.u.uSunCol, this.theme.sunColor || [1, 0.95, 0.8]);
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.bindVertexArray(this.skyVao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+    gl.enable(gl.CULL_FACE);
+    gl.depthMask(true);
+    this.stats.draws++;
   }
   setLights(list) {
     // list: [{x,y,z,i,c:[r,g,b]}] max 4
@@ -445,8 +524,8 @@ export class Renderer {
     gl.uniform3fv(P.u.uSun, (opts && opts.sun) || this.sun);
     gl.uniform2fv(P.u.uFog, (opts && opts.fog) || this.fog);
     gl.uniform3fv(P.u.uFogCol, this.fogColor);
-    gl.uniform1f(P.u.uAmbient, (opts && opts.ambient) || 0.55);
-    gl.uniform4fv(P.u.uLights, (opts && opts.noLights) ? new Float32Array(16) : this.lights);
+    gl.uniform1f(P.u.uAmbient, (opts && opts.ambient) || this.theme.ambient || 0.55);
+    gl.uniform4fv(P.u.uLights, (opts && opts.noLights) ? this.zeroLights : this.lights);
     gl.uniform3fv(P.u.uLightCol, this.lightCols);
   }
   setBlend(mode) {

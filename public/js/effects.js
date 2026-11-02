@@ -115,6 +115,54 @@ export class Effects {
     }
   }
 
+  heBlast(x, y, z) {
+    this.light(x, y + 0.5, z, 14, [1, 0.62, 0.3], 9);
+    this.shake = Math.max(this.shake, 0.6);
+    for (let i = 0; i < 45; i++) {
+      const a = Math.random() * Math.PI * 2, e = Math.random() * Math.PI * 0.5, sp = 3 + Math.random() * 8;
+      const fire = i < 26;
+      this.particle({
+        x, y: y + 0.2, z, vx: Math.cos(a) * Math.cos(e) * sp, vy: Math.sin(e) * sp, vz: Math.sin(a) * Math.cos(e) * sp,
+        life: fire ? 0.35 + Math.random() * 0.3 : 1.2 + Math.random(), max: fire ? 0.65 : 2,
+        s: fire ? 0.18 + Math.random() * 0.2 : 0.3 + Math.random() * 0.3, grow: fire ? 0.5 : 0.9,
+        c: fire ? [1, 0.6 + Math.random() * 0.3, 0.2] : [0.32, 0.31, 0.3], g: fire ? 1 : -0.8, a: fire ? 1 : 0.55,
+        e: fire ? 1 : 0, alpha: !fire, drag: 3
+      });
+    }
+  }
+
+  flashBurst(x, y, z) {
+    this.light(x, y + 0.3, z, 40, [1, 1, 0.95], 22);
+    for (let i = 0; i < 16; i++) {
+      this.particle({ x, y: y + 0.1, z, vx: (Math.random() - 0.5) * 6, vy: Math.random() * 4, vz: (Math.random() - 0.5) * 6,
+        life: 0.25, max: 0.25, s: 0.06, c: [1, 1, 0.9], g: 4, a: 1, e: 1 });
+    }
+  }
+
+  /** Voxel smoke clouds: deterministic cube clusters that grow, swirl and fade. */
+  renderSmokes(alpha, smokes, serverNow) {
+    const G = S.CONFIG.GRENADE.smoke;
+    for (const sm of smokes) {
+      const age = (serverNow - sm.t0) / 1000;
+      if (age < 0 || age > G.duration) continue;
+      const grow = Math.min(1, age / 1.6);
+      const fade = age > G.duration - 2.5 ? (G.duration - age) / 2.5 : 1;
+      const rng = S.mulberry32(sm.id * 7919);
+      const R = G.radius * (0.35 + 0.65 * grow);
+      for (let i = 0; i < 70; i++) {
+        const u = rng() * 2 - 1, th = rng() * Math.PI * 2, rr = Math.cbrt(rng());
+        const q = Math.sqrt(1 - u * u);
+        const swirl = Math.sin(age * 0.6 + i) * 0.25;
+        const x = sm.x + q * Math.cos(th + swirl * 0.2) * R * rr;
+        const y = sm.y + u * R * rr * 0.55 + age * 0.04;
+        const zz = sm.z + q * Math.sin(th + swirl * 0.2) * R * rr;
+        const size = (1.1 + rng() * 0.9) * (0.5 + 0.5 * grow);
+        const shade = 0.72 + rng() * 0.16;
+        alpha.pushAABB(x, Math.max(1, y), zz, size, size, size, shade, shade, shade * 1.02, (rr < 0.6 ? 0.82 : 0.5) * fade, 0.25);
+      }
+    }
+  }
+
   decal(point, normal) {
     const d = { x: point[0] + normal[0] * 0.004, y: point[1] + normal[1] * 0.004, z: point[2] + normal[2] * 0.004, n: normal,
       bx: point[0] - normal[0] * 0.05, by: point[1] - normal[1] * 0.05, bz: point[2] - normal[2] * 0.05 };

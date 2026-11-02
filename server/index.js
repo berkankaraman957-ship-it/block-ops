@@ -95,7 +95,7 @@ const server = http.createServer((req, res) => {
   try { url = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400); res.end(); return; }
   if (url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
+    res.end(JSON.stringify({ ok: true, version: S.CONFIG.VERSION, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
     return;
   }
   if (url === '/vendor/socket.io.min.js') return sendFile(res, clientBundlePath, true);
@@ -127,7 +127,13 @@ function newRoomCode() {
   do { c = Math.random().toString(36).slice(2, 7).toUpperCase(); } while (rooms.has(c));
   return c;
 }
-function getRoom(code) {
+function roomOpts(data) {
+  return {
+    map: S.MAPS[data.map] ? data.map : S.MAP_ORDER[Math.floor(Math.random() * S.MAP_ORDER.length)],
+    difficulty: S.DIFFICULTY[data.difficulty] ? data.difficulty : 'medium'
+  };
+}
+function getRoom(code, data) {
   if (code && rooms.has(code)) return rooms.get(code);
   if (rooms.size >= MAX_ROOMS) return null;
   const id = code || newRoomCode();
@@ -136,18 +142,20 @@ function getRoom(code) {
     setTimeout(() => {
       if (r.humanCount() === 0 && rooms.get(r.id) === r) { r.destroy(); rooms.delete(r.id); console.log('[room] closed', r.id); }
     }, 15000);
-  });
+  }, roomOpts(data || {}));
   rooms.set(id, room);
-  console.log('[room] created', id);
+  console.log('[room] created', id, room.mapId, room.diff.id);
   return room;
 }
-function quickMatchRoom() {
+function quickMatchRoom(data) {
   let best = null;
   for (const r of rooms.values()) {
     const humans = r.humanCount();
-    if (humans < CONFIG_MAX_HUMANS && r.phase !== 'gameover' && (!best || humans > best.humanCount())) best = r;
+    if (r.isPrivate || humans >= CONFIG_MAX_HUMANS || r.phase === 'gameover') continue;
+    if (data.difficulty && r.diff.id !== data.difficulty) continue;
+    if (!best || humans > best.humanCount()) best = r;
   }
-  return best || getRoom(null);
+  return best || getRoom(null, data);
 }
 const CONFIG_MAX_HUMANS = S.CONFIG.MAX_PER_TEAM * 2;
 
@@ -173,7 +181,8 @@ io.on('connection', (socket) => {
     if (player) return ack({ ok: false, err: 'Zaten bir odadasın' });
     data = data || {};
     const code = cleanRoomCode(data.room);
-    const r = code ? getRoom(code) : quickMatchRoom();
+    const r = code ? getRoom(code, data) : quickMatchRoom(data);
+    if (r && code) r.isPrivate = true;
     if (!r) return ack({ ok: false, err: 'Sunucu dolu' });
     if (r.humanCount() >= CONFIG_MAX_HUMANS) return ack({ ok: false, err: 'Oda dolu (10/10)' });
     room = r;

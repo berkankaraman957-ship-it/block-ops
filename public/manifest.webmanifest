@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "BLOCK OPS: Tactical Drift",
+  "short_name": "BLOCK OPS",
+  "description": "5v5 voxel taktiksel nişancı",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#0b0e13",
+  "theme_color": "#11151c",
+  "categories": ["games"],
+  "lang": "tr",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,12 @@
+# Render.com one-click deploy: New → Blueprint → select this repo.
+services:
+  - type: web
+    name: blockops-server
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: node server/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"

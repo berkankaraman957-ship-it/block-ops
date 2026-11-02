@@ -1,0 +1,878 @@
+'use strict';
+/*
+ * Room — one authoritative 5v5 match.
+ * - Fixed-rate tick (CONFIG.TICK_RATE): consumes queued client inputs with a
+ *   time budget (anti speed-hack), runs shared physics, records position history.
+ * - Lag-compensated hit detection: shooter's view angles + seeded spread/recoil are
+ *   re-simulated on the server; victims are rewound to the client's render time.
+ * - CS-style competitive loop: warmup → freeze/buy → live → post, MR12, halftime swap,
+ *   economy with loss bonus, bomb plant/defuse, destructible voxels.
+ */
+const S = require('../shared/shared.js');
+const BotBrain = require('./Bot');
+
+const { CONFIG, WEAPONS, ITEMS, BLOCK, BLOCK_INFO, BTN, MAP } = S;
+const R = CONFIG.ROUND, E = CONFIG.ECON, BB = CONFIG.BOMB;
+
+const BOT_NAMES = ['Ayaz', 'Kartal', 'Bora', 'Toprak', 'Demir', 'Atlas', 'Poyraz', 'Tuna', 'Yiğit', 'Arda', 'Kaya', 'Alp'];
+let numCounter = 1;
+
+const r2 = (v) => Math.round(v * 100) / 100;
+const r3 = (v) => Math.round(v * 1000) / 1000;
+const finite = (v) => typeof v === 'number' && Number.isFinite(v);
+
+class Room {
+  constructor(io, id, onEmpty) {
+    this.io = io;
+    this.id = id;
+    this.onEmpty = onEmpty;
+    this.players = new Map();
+    this.bots = new Map(); // playerId -> BotBrain
+    this.world = new S.VoxelWorld();
+    S.generateMap(this.world);
+    this.baseData = this.world.data.slice();
+    this.blockHp = new Map();
+    this.pendingBlocks = [];
+    this.startTime = Date.now();
+    this.phase = 'warmup';
+    this.phaseEnd = 0;
+    this.roundStart = 0;
+    this.buyEnd = 0;
+    this.round = 0;
+    this.score = { T: 0, CT: 0 };
+    this.lossStreak = { T: 0, CT: 0 };
+    this.bomb = { state: 'none' };
+    this.botPlan = { site: 'A' };
+    this.tickCount = 0;
+    this.lastTickReal = Date.now();
+    this.matchStats = [];
+    this.timer = setInterval(() => this.safeTick(), 1000 / CONFIG.TICK_RATE);
+  }
+
+  now() { return Date.now() - this.startTime; }
+
+  destroy() {
+    clearInterval(this.timer);
+    this.players.clear();
+    this.bots.clear();
+  }
+
+  // -------------------------------------------------------------------------
+  // PLAYER MANAGEMENT
+  // -------------------------------------------------------------------------
+  humanCount() { let n = 0; for (const p of this.players.values()) if (!p.isBot) n++; return n; }
+  teamCount(team) { let n = 0; for (const p of this.players.values()) if (p.team === team) n++; return n; }
+  aliveCount(team) { let n = 0; for (const p of this.players.values()) if (p.team === team && p.alive) n++; return n; }
+
+  createPlayer(id, name, isBot, socket) {
+    return {
+      id, num: numCounter++, name, isBot, socket, team: 'SPEC',
+      x: 32.5, y: 1, z: 32.5, vx: 0, vy: 0, vz: 0, onGround: true, crouch: false, yaw: 0, pitch: 0,
+      alive: false, hp: 100, armor: 0, helmet: false, kit: false, money: E.START,
+      weapons: { 1: null, 2: null, 3: { id: 'knife', ammo: 0, reserve: 0 } },
+      slot: 3, prevSlot: 2, drawEnd: 0, reloadEnd: 0, lastShot: -1e9, recoilIdx: 0, lastShotSeq: 0, scoped: 0,
+      inputQueue: [], lastSeq: 0, budget: 0, buttons: 0, useHeld: false, history: [],
+      kills: 0, deaths: 0, assists: 0, mvps: 0, roundKills: 0, dmgBy: new Map(),
+      respawnAt: 0, ping: 0, lastAttacker: null, lastAttackTime: 0
+    };
+  }
+
+  addHuman(socket, name) {
+    const p = this.createPlayer(socket.id, name, false, socket);
+    this.players.set(p.id, p);
+    socket.join(this.id);
+    this.assignTeam(p, this.autoTeam());
+    return p;
+  }
+
+  addBot(team) {
+    const t = team === 'T' || team === 'CT' ? team : this.autoTeam();
+    if (!t || this.teamCount(t) >= CONFIG.MAX_PER_TEAM) return null;
+    const used = new Set([...this.players.values()].map((p) => p.name));
+    const base = BOT_NAMES.find((n) => !used.has('BOT ' + n)) || ('X' + numCounter);
+    const id = 'bot_' + numCounter + '_' + Math.random().toString(36).slice(2, 6);
+    const p = this.createPlayer(id, 'BOT ' + base, true, null);
+    this.players.set(id, p);
+    this.bots.set(id, new BotBrain(this, p));
+    this.assignTeam(p, t);
+    this.broadcastMsg(`${p.name} ${t === 'T' ? 'Saldırı' : 'Savunma'} takımına katıldı`);
+    return p;
+  }
+
+  kickBots() {
+    for (const id of [...this.bots.keys()]) this.removePlayer(id);
+  }
+
+  autoTeam() {
+    const t = this.teamCount('T'), ct = this.teamCount('CT');
+    if (t >= CONFIG.MAX_PER_TEAM && ct >= CONFIG.MAX_PER_TEAM) return 'SPEC';
+    if (t === ct) return Math.random() < 0.5 ? 'T' : 'CT';
+    return t < ct ? 'T' : 'CT';
+  }
+
+  assignTeam(p, team) {
+    if (team !== 'T' && team !== 'CT') team = 'SPEC';
+    if (team !== 'SPEC' && p.team !== team && this.teamCount(team) >= CONFIG.MAX_PER_TEAM) {
+      // make room by removing a bot from that team
+      const bot = [...this.players.values()].find((q) => q.isBot && q.team === team);
+      if (bot) this.removePlayer(bot.id); else return false;
+    }
+    if (p.alive && this.phase !== 'warmup') this.killPlayer(p, null, 'suicide', false);
+    p.team = team;
+    p.alive = false;
+    this.giveDefaults(p);
+    if (this.phase === 'warmup' && team !== 'SPEC') { p.money = E.WARMUP_MONEY; this.spawn(p, -1); }
+    return true;
+  }
+
+  removePlayer(id) {
+    const p = this.players.get(id);
+    if (!p) return;
+    if (p.alive) this.dropBombIfCarrier(p);
+    this.players.delete(id);
+    this.bots.delete(id);
+    if (p.socket) p.socket.leave(this.id);
+    if (this.humanCount() === 0) this.onEmpty(this);
+  }
+
+  giveDefaults(p) {
+    const pistol = p.team === 'CT' ? 'p12' : 'p9';
+    const w = WEAPONS[pistol];
+    p.weapons = { 1: null, 2: { id: pistol, ammo: w.mag, reserve: w.reserve }, 3: { id: 'knife', ammo: 0, reserve: 0 } };
+    p.slot = 2; p.prevSlot = 3;
+    p.armor = 0; p.helmet = false; p.kit = false;
+    p.reloadEnd = 0; p.scoped = 0; p.recoilIdx = 0;
+  }
+
+  spawn(p, index) {
+    if (p.team !== 'T' && p.team !== 'CT') return;
+    const list = MAP.spawns[p.team];
+    let sp;
+    if (index >= 0) sp = list[index % list.length];
+    else {
+      // random free spawn (warmup)
+      const shuffled = list.slice().sort(() => Math.random() - 0.5);
+      sp = shuffled.find((c) => ![...this.players.values()].some((q) => q !== p && q.alive && Math.hypot(q.x - c[0], q.z - c[2]) < 0.8)) || shuffled[0];
+    }
+    p.x = sp[0]; p.y = sp[1]; p.z = sp[2];
+    p.vx = p.vy = p.vz = 0; p.onGround = true; p.crouch = false;
+    p.yaw = MAP.spawnYaw[p.team]; p.pitch = 0;
+    p.alive = true; p.hp = 100;
+    p.dmgBy = new Map();
+    p.history = [];
+    p.reloadEnd = 0; p.scoped = 0; p.planting = 0; p.defusing = 0;
+    p.inputQueue.length = 0;
+    p.drawEnd = this.now() + 300;
+    if (!p.weapons[p.slot]) p.slot = p.weapons[1] ? 1 : 2;
+    p.forceSync = true;
+    const bot = this.bots.get(p.id);
+    if (bot) { bot.onSpawn(); if (this.phase === 'warmup') { bot.bought = false; bot.buyAt = this.now() + 500; } }
+  }
+
+  // -------------------------------------------------------------------------
+  // NETWORK INPUT HANDLERS
+  // -------------------------------------------------------------------------
+  onInputs(p, arr) {
+    if (!Array.isArray(arr)) return;
+    for (let i = 0; i < arr.length && i < 30; i++) {
+      const inp = arr[i];
+      if (!inp || !finite(inp.s) || inp.s <= p.lastSeq) continue;
+      if (!finite(inp.y) || !finite(inp.p)) continue;
+      p.inputQueue.push({
+        seq: inp.s | 0,
+        mx: S.clamp(+inp.x || 0, -1, 1),
+        mz: S.clamp(+inp.z || 0, -1, 1),
+        yaw: S.wrapAngle(inp.y),
+        pitch: S.clamp(inp.p, -1.55, 1.55),
+        b: inp.b | 0
+      });
+    }
+    if (p.inputQueue.length > 90) p.inputQueue.splice(0, p.inputQueue.length - 90);
+  }
+
+  queueBotInput(p, inp) { p.inputQueue.push(inp); }
+
+  canBuy(p) {
+    if (!p.alive || (p.team !== 'T' && p.team !== 'CT')) return false;
+    const zone = MAP.buyZones[p.team];
+    if (!S.inZone(zone, p.x, p.z)) return false;
+    if (this.phase === 'warmup') return true;
+    if (this.phase === 'freeze') return true;
+    if (this.phase === 'live') return this.now() < this.buyEnd;
+    return false;
+  }
+
+  onBuy(p, item) {
+    const reply = (ok, msg) => { if (p.socket) p.socket.emit('buyr', { ok, msg, item }); return ok; };
+    if (typeof item !== 'string') return false;
+    if (!this.canBuy(p)) return reply(false, 'Satın alma bölgesinde/süresinde değilsin');
+    const w = WEAPONS[item];
+    if (w && !w.melee) {
+      if (w.team && w.team !== p.team) return reply(false, 'Bu silah karşı takıma ait');
+      const cur = p.weapons[w.slot];
+      if (cur && cur.id === item) return reply(false, 'Zaten sende var');
+      if (p.money < w.price) return reply(false, 'Yetersiz bakiye');
+      p.money -= w.price;
+      p.weapons[w.slot] = { id: item, ammo: w.mag, reserve: w.reserve };
+      this.switchSlot(p, w.slot, true);
+      return reply(true, `${w.name} satın alındı`);
+    }
+    const it = ITEMS[item];
+    if (!it) return reply(false, 'Bilinmeyen eşya');
+    if (it.team && it.team !== p.team) return reply(false, 'Bu ekipman sadece CT içindir');
+    if (item === 'kevlar') {
+      if (p.armor >= 100) return reply(false, 'Zırhın zaten tam');
+      if (p.money < it.price) return reply(false, 'Yetersiz bakiye');
+      p.money -= it.price; p.armor = 100;
+      return reply(true, 'Kevlar alındı');
+    }
+    if (item === 'helmet') {
+      if (p.armor >= 100 && p.helmet) return reply(false, 'Zırh ve kask zaten var');
+      const price = p.armor >= 100 ? 350 : it.price;
+      if (p.money < price) return reply(false, 'Yetersiz bakiye');
+      p.money -= price; p.armor = 100; p.helmet = true;
+      return reply(true, 'Kevlar + Kask alındı');
+    }
+    if (item === 'defuse') {
+      if (p.kit) return reply(false, 'İmha kitin zaten var');
+      if (p.money < it.price) return reply(false, 'Yetersiz bakiye');
+      p.money -= it.price; p.kit = true;
+      return reply(true, 'İmha kiti alındı');
+    }
+    return reply(false, 'Geçersiz');
+  }
+
+  switchSlot(p, slot, force) {
+    slot = slot | 0;
+    if (slot < 1 || slot > 3 || !p.weapons[slot]) return;
+    if (slot === p.slot && !force) return;
+    if (slot !== p.slot) p.prevSlot = p.slot;
+    p.slot = slot;
+    p.reloadEnd = 0;
+    p.scoped = 0;
+    p.recoilIdx = 0;
+    p.drawEnd = this.now() + WEAPONS[p.weapons[slot].id].drawTime * 1000;
+  }
+
+  onReload(p) {
+    if (!p.alive) return;
+    const ws = p.weapons[p.slot];
+    if (!ws) return;
+    const w = WEAPONS[ws.id];
+    if (w.melee || p.reloadEnd || ws.ammo >= w.mag || ws.reserve <= 0) return;
+    p.reloadEnd = this.now() + w.reload * 1000;
+    p.scoped = 0;
+  }
+
+  onScope(p, level) {
+    const ws = p.weapons[p.slot];
+    if (!p.alive || !ws) return;
+    const w = WEAPONS[ws.id];
+    if (!w.scope || p.reloadEnd) { p.scoped = 0; return; }
+    p.scoped = S.clamp(level | 0, 0, w.scope.length);
+  }
+
+  onShoot(p, msg) {
+    const now = this.now();
+    if (!p.alive || !msg || (this.phase !== 'live' && this.phase !== 'warmup' && this.phase !== 'post')) return;
+    if (!finite(msg.seq) || msg.seq <= p.lastShotSeq) return;
+    if (!finite(msg.yaw) || !finite(msg.pitch)) return;
+    const ws = p.weapons[p.slot];
+    if (!ws) return;
+    const w = WEAPONS[ws.id];
+    if (now < p.drawEnd - 60) return;
+    if (p.reloadEnd) return;
+    const interval = 60000 / w.rpm;
+    if (now - p.lastShot < interval * 0.8) return;
+    if (!w.melee) {
+      if (ws.ammo <= 0) return;
+      ws.ammo--;
+    }
+    const yaw = S.wrapAngle(msg.yaw), pitch = S.clamp(msg.pitch, -1.55, 1.55);
+    const serverIdx = S.recoilIndexAt(p.recoilIdx, now - p.lastShot, w);
+    const idx = finite(msg.ri) && Math.abs(msg.ri - serverIdx) < 1.6 ? Math.max(0, msg.ri) : serverIdx;
+    const speed = Math.hypot(p.vx, p.vz);
+    const spread = S.getSpread(w, speed, p.onGround, p.crouch, p.scoped > 0);
+    const recoil = w.melee ? [0, 0] : S.getRecoil(w, idx);
+    const dir = S.computeShotDirection(yaw, pitch, recoil, spread, S.shotSeed(p.num, msg.seq));
+    p.recoilIdx = idx + 1;
+    p.lastShot = now;
+    p.lastShotSeq = msg.seq | 0;
+    if (w.scope && p.scoped) p.scoped = 0; // bolt action unscopes
+    const eye = [p.x, p.y + S.eyeHeight(p), p.z];
+    const rewindT = finite(msg.t) ? S.clamp(msg.t, now - CONFIG.MAX_REWIND_MS, now) : now;
+    const res = this.traceShot(p, eye, dir, w, rewindT);
+    this.io.to(this.id).emit('shot', {
+      i: p.id, w: w.id, o: [r2(eye[0]), r2(eye[1]), r2(eye[2])], e: [r2(res.end[0]), r2(res.end[1]), r2(res.end[2])],
+      n: res.normal, bt: res.blockType, hp: res.hitPlayer ? 1 : 0
+    });
+    if (ws.ammo === 0 && ws.reserve > 0 && !w.melee) {
+      p.reloadEnd = now + w.reload * 1000 + 250;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // HIT DETECTION (lag compensated)
+  // -------------------------------------------------------------------------
+  positionAt(q, t) {
+    const h = q.history;
+    if (!h.length) return { x: q.x, y: q.y, z: q.z, crouch: q.crouch };
+    if (t >= h[h.length - 1].t) return h[h.length - 1];
+    for (let i = h.length - 1; i > 0; i--) {
+      const a = h[i - 1], b = h[i];
+      if (t >= a.t && t <= b.t) {
+        const f = (t - a.t) / Math.max(1, b.t - a.t);
+        return { x: S.lerp(a.x, b.x, f), y: S.lerp(a.y, b.y, f), z: S.lerp(a.z, b.z, f), crouch: f < 0.5 ? a.crouch : b.crouch };
+      }
+    }
+    return h[0];
+  }
+
+  traceShot(p, eye, dir, w, rewindT) {
+    const range = w.range;
+    const blockHits = [];
+    let tStop = range;
+    let penLeft = w.penetration;
+    let stopNormal = null, stopType = 0;
+    this.world.traverse(eye, dir, range, (x, y, z, t, n, type) => {
+      const info = BLOCK_INFO[type];
+      blockHits.push({ x, y, z, t, n, type });
+      if (info.hp > 0 && penLeft > 0) { penLeft--; return false; }
+      tStop = t; stopNormal = n; stopType = type;
+      return true;
+    });
+
+    let best = null;
+    for (const q of this.players.values()) {
+      if (q === p || !q.alive) continue;
+      const pos = this.positionAt(q, rewindT);
+      const boxes = S.getHitboxes(pos.x, pos.y, pos.z, pos.crouch);
+      for (const hb of boxes) {
+        const t = S.rayAABB(eye, dir, hb.min, hb.max);
+        if (t >= 0 && t < tStop && t <= range && (!best || t < best.t)) best = { q, part: hb.part, t };
+      }
+    }
+
+    let dmgMul = 1;
+    for (const bh of blockHits) {
+      if (best && bh.t > best.t) break;
+      const info = BLOCK_INFO[bh.type];
+      if (info.hp > 0) {
+        this.damageBlock(bh.x, bh.y, bh.z, w.damage * (w.melee ? 1.2 : 0.6) * dmgMul);
+        if (bh.t < tStop) dmgMul *= 0.5;
+      }
+    }
+
+    if (best) {
+      const dist = best.t;
+      let dmg = w.damage * dmgMul * Math.pow(w.rangeMod, dist / 10) * CONFIG.PART_MUL[best.part];
+      this.applyDamage(best.q, p, dmg, best.part, w, dir);
+      const end = [eye[0] + dir[0] * dist, eye[1] + dir[1] * dist, eye[2] + dir[2] * dist];
+      return { end, normal: null, blockType: 0, hitPlayer: true };
+    }
+    const tEnd = Math.min(tStop, range);
+    const end = [eye[0] + dir[0] * tEnd, eye[1] + dir[1] * tEnd, eye[2] + dir[2] * tEnd];
+    return { end, normal: stopNormal, blockType: stopType, hitPlayer: false };
+  }
+
+  damageBlock(x, y, z, amount) {
+    const type = this.world.get(x, y, z);
+    const info = BLOCK_INFO[type];
+    if (!info || info.hp <= 0) return;
+    const key = x + ',' + y + ',' + z;
+    const hp = (this.blockHp.has(key) ? this.blockHp.get(key) : info.hp) - amount;
+    if (hp <= 0) {
+      this.blockHp.delete(key);
+      this.world.set(x, y, z, BLOCK.AIR);
+      this.pendingBlocks.push([x, y, z, BLOCK.AIR, type]);
+    } else this.blockHp.set(key, hp);
+  }
+
+  applyDamage(victim, attacker, rawDmg, part, w, dir) {
+    if (!victim.alive) return;
+    if (attacker && attacker !== victim && attacker.team === victim.team && !CONFIG.FRIENDLY_FIRE) return;
+    let health = rawDmg;
+    const armored = victim.armor > 0 && (part === 'chest' || (part === 'head' && victim.helmet));
+    if (armored) {
+      health = rawDmg * w.armorPen;
+      let armorDmg = (rawDmg - health) * 0.5;
+      if (armorDmg > victim.armor) { health += (armorDmg - victim.armor) * 2; armorDmg = victim.armor; }
+      victim.armor = Math.max(0, Math.round(victim.armor - armorDmg));
+    }
+    health = Math.max(1, Math.round(health));
+    const dealt = Math.min(health, victim.hp);
+    victim.hp -= health;
+    if (attacker) {
+      victim.dmgBy.set(attacker.id, (victim.dmgBy.get(attacker.id) || 0) + dealt);
+      victim.lastAttacker = attacker.id;
+      victim.lastAttackTime = this.now();
+    }
+    const killed = victim.hp <= 0;
+    if (attacker && attacker.socket) attacker.socket.emit('hitc', { d: dealt, hs: part === 'head' ? 1 : 0, k: killed ? 1 : 0 });
+    if (victim.socket) {
+      const from = attacker ? [r2(attacker.x), r2(attacker.z)] : null;
+      victim.socket.emit('dmg', { d: dealt, f: from, hs: part === 'head' ? 1 : 0 });
+    }
+    const bot = this.bots.get(victim.id);
+    if (bot && attacker) bot.onDamaged(attacker);
+    if (killed) { victim.hp = 0; this.killPlayer(victim, attacker, w.id, part === 'head'); }
+  }
+
+  killPlayer(victim, killer, weaponId, headshot) {
+    if (!victim.alive) return;
+    victim.alive = false;
+    victim.hp = 0;
+    victim.deaths++;
+    victim.scoped = 0;
+    this.dropBombIfCarrier(victim);
+    victim.respawnAt = this.now() + R.WARMUP_RESPAWN * 1000;
+    const warm = this.phase === 'warmup';
+    if (killer && killer !== victim) {
+      if (killer.team === victim.team) {
+        killer.kills--;
+        if (!warm) killer.money = Math.max(0, killer.money - 300);
+      } else {
+        killer.kills++;
+        killer.roundKills++;
+        const reward = (WEAPONS[weaponId] || WEAPONS.knife).killReward;
+        if (!warm) killer.money = Math.min(E.MAX, killer.money + reward);
+      }
+    }
+    for (const [aid, dmg] of victim.dmgBy) {
+      if (killer && aid === killer.id) continue;
+      const a = this.players.get(aid);
+      if (a && dmg >= 41 && a.team !== victim.team) a.assists++;
+    }
+    // Dead players lose their gear for next round
+    victim.weapons = { 1: null, 2: null, 3: { id: 'knife', ammo: 0, reserve: 0 } };
+    victim.armor = 0; victim.helmet = false; victim.kit = false;
+    victim.needsDefaults = true;
+    this.io.to(this.id).emit('kill', {
+      k: killer ? killer.id : null, kn: killer ? killer.name : '', kt: killer ? killer.team : '',
+      v: victim.id, vn: victim.name, vt: victim.team, w: weaponId, hs: headshot ? 1 : 0
+    });
+  }
+
+  dropBombIfCarrier(p) {
+    if (this.bomb.state === 'carried' && this.bomb.carrier === p.id) {
+      this.bomb = { state: 'dropped', x: p.x, y: p.y, z: p.z };
+      this.io.to(this.id).emit('bomb', { e: 'dropped', x: r2(p.x), y: r2(p.y), z: r2(p.z), by: p.name });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // WORLD
+  // -------------------------------------------------------------------------
+  resetWorld() {
+    this.world.data.set(this.baseData);
+    this.blockHp.clear();
+    this.pendingBlocks = [];
+    this.io.to(this.id).emit('wreset');
+  }
+
+  worldDiff() {
+    const out = [];
+    const d = this.world.data, b = this.baseData, w = this.world;
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] !== b[i]) {
+        const x = i % w.sx, z = Math.floor(i / w.sx) % w.sz, y = Math.floor(i / (w.sx * w.sz));
+        out.push([x, y, z, d[i]]);
+      }
+    }
+    return out;
+  }
+
+  // -------------------------------------------------------------------------
+  // ROUND FLOW
+  // -------------------------------------------------------------------------
+  startMatch() {
+    this.round = 0;
+    this.score = { T: 0, CT: 0 };
+    this.lossStreak = { T: 0, CT: 0 };
+    for (const p of this.players.values()) {
+      p.kills = p.deaths = p.assists = p.mvps = 0;
+      p.money = E.START;
+      p.alive = false;
+      this.giveDefaults(p);
+    }
+    this.broadcastMsg('MAÇ BAŞLIYOR! İlk 13 raunt kazanan takım galip gelir.');
+    this.startRound();
+  }
+
+  startRound() {
+    this.round++;
+    this.resetWorld();
+    const now = this.now();
+    let ti = 0, ci = 0;
+    for (const p of this.players.values()) {
+      p.roundKills = 0;
+      if (p.team !== 'T' && p.team !== 'CT') continue;
+      if (!p.alive || p.needsDefaults) {
+        const keepMoney = p.money;
+        this.giveDefaults(p);
+        p.money = keepMoney;
+        p.needsDefaults = false;
+      }
+      this.spawn(p, p.team === 'T' ? ti++ : ci++);
+      // top up pistol if lost
+      if (!p.weapons[2]) {
+        const pistol = p.team === 'CT' ? 'p12' : 'p9';
+        p.weapons[2] = { id: pistol, ammo: WEAPONS[pistol].mag, reserve: WEAPONS[pistol].reserve };
+      }
+    }
+    // Bomb to a random T
+    const ts = [...this.players.values()].filter((p) => p.team === 'T' && p.alive);
+    const humansT = ts.filter((p) => !p.isBot);
+    const carrier = (humansT.length ? humansT : ts)[Math.floor(Math.random() * (humansT.length || ts.length || 1))];
+    this.bomb = carrier ? { state: 'carried', carrier: carrier.id } : { state: 'none' };
+    this.botPlan = { site: Math.random() < 0.5 ? 'A' : 'B' };
+    this.phase = 'freeze';
+    this.roundStart = now;
+    this.phaseEnd = now + R.FREEZE * 1000;
+    this.buyEnd = now + (R.FREEZE + R.BUY_WINDOW) * 1000;
+    for (const b of this.bots.values()) b.onRoundStart();
+    this.io.to(this.id).emit('rstart', { rd: this.round, carrier: carrier ? carrier.id : null });
+  }
+
+  endRound(winner, reason) {
+    if (this.phase !== 'live') return;
+    const now = this.now();
+    const loser = winner === 'T' ? 'CT' : 'T';
+    this.score[winner]++;
+    let winMoney = E.WIN_ELIM;
+    if (reason === 'bomb') winMoney = E.WIN_BOMB;
+    else if (reason === 'defuse') winMoney = E.WIN_DEFUSE;
+    else if (reason === 'time') winMoney = E.WIN_TIME;
+    const lossMoney = Math.min(E.LOSS_BASE + E.LOSS_STEP * this.lossStreak[loser], E.LOSS_MAX);
+    this.lossStreak[loser] = Math.min(this.lossStreak[loser] + 1, 4);
+    this.lossStreak[winner] = Math.max(0, this.lossStreak[winner] - 1);
+    const planted = this.bomb.state === 'planted' || this.bomb.state === 'exploded' || this.bomb.state === 'defused';
+    let mvp = null;
+    for (const p of this.players.values()) {
+      if (p.team === winner) {
+        p.money = Math.min(E.MAX, p.money + winMoney);
+        if (!mvp || p.roundKills > mvp.roundKills) mvp = p;
+      } else if (p.team === loser) {
+        // CS rule: Ts who survive a time-out loss get no loss bonus
+        const noBonus = loser === 'T' && reason === 'time' && p.alive;
+        let m = noBonus ? 0 : lossMoney;
+        if (loser === 'T' && planted) m += E.PLANT_TEAM_BONUS;
+        p.money = Math.min(E.MAX, p.money + m);
+      }
+    }
+    if (mvp) mvp.mvps++;
+    this.phase = 'post';
+    this.phaseEnd = now + R.POST * 1000;
+    this.io.to(this.id).emit('rend', { w: winner, r: reason, sc: this.score, mvp: mvp ? mvp.name : null });
+  }
+
+  afterPost() {
+    const total = this.score.T + this.score.CT;
+    if (this.score.T >= R.WIN || this.score.CT >= R.WIN || total >= R.MAX_ROUNDS) {
+      const winner = this.score.T > this.score.CT ? 'T' : this.score.CT > this.score.T ? 'CT' : 'DRAW';
+      this.phase = 'gameover';
+      this.phaseEnd = this.now() + R.GAMEOVER * 1000;
+      this.io.to(this.id).emit('over', { w: winner, sc: this.score });
+      return;
+    }
+    if (total === R.HALF) {
+      // Halftime: swap sides, reset economy
+      for (const p of this.players.values()) {
+        if (p.team === 'T') p.team = 'CT'; else if (p.team === 'CT') p.team = 'T';
+        p.money = E.START;
+        p.alive = false;
+        this.giveDefaults(p);
+      }
+      this.score = { T: this.score.CT, CT: this.score.T };
+      this.lossStreak = { T: 0, CT: 0 };
+      this.io.to(this.id).emit('half', { sc: this.score });
+      this.broadcastMsg('DEVRE ARASI — Takımlar taraf değiştirdi!');
+    }
+    this.startRound();
+  }
+
+  plantBomb(p, site) {
+    const now = this.now();
+    this.bomb = { state: 'planted', x: p.x, y: p.y, z: p.z, site, plantedAt: now, explodeAt: now + BB.TIMER * 1000, defuser: null, defuseStart: 0, defuseDur: 0 };
+    p.money = Math.min(E.MAX, p.money + E.PLANT_REWARD);
+    p.planting = 0;
+    this.io.to(this.id).emit('bomb', { e: 'planted', x: r2(p.x), y: r2(p.y), z: r2(p.z), site, by: p.name, ex: this.bomb.explodeAt });
+  }
+
+  explodeBomb() {
+    const b = this.bomb;
+    b.state = 'exploded';
+    const c = [b.x, b.y + 0.5, b.z];
+    const sigma = BB.RADIUS / 3;
+    for (const p of this.players.values()) {
+      if (!p.alive) continue;
+      const d = Math.hypot(p.x - c[0], p.y + 0.9 - c[1], p.z - c[2]);
+      if (d > BB.RADIUS * 1.2) continue;
+      let dmg = BB.DAMAGE * Math.exp(-(d * d) / (2 * sigma * sigma));
+      if (p.armor > 0) { const a = Math.min(p.armor, dmg * 0.25); p.armor -= Math.round(a); dmg -= a * 2; }
+      if (dmg >= 1) {
+        p.hp -= Math.round(dmg);
+        if (p.socket) p.socket.emit('dmg', { d: Math.round(dmg), f: [r2(c[0]), r2(c[2])], hs: 0 });
+        if (p.hp <= 0) this.killPlayer(p, null, 'bomb', false);
+      }
+    }
+    // destroy destructible voxels in radius
+    const rr = BB.BLOCK_RADIUS;
+    for (let y = Math.floor(c[1] - rr); y <= c[1] + rr; y++)
+      for (let z = Math.floor(c[2] - rr); z <= c[2] + rr; z++)
+        for (let x = Math.floor(c[0] - rr); x <= c[0] + rr; x++) {
+          if (Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1], z + 0.5 - c[2]) <= rr) this.damageBlock(x, y, z, 9999);
+        }
+    this.io.to(this.id).emit('bomb', { e: 'exploded', x: r2(b.x), y: r2(b.y), z: r2(b.z) });
+  }
+
+  updateGame(now) {
+    switch (this.phase) {
+      case 'warmup': {
+        for (const p of this.players.values()) {
+          if ((p.team === 'T' || p.team === 'CT') && !p.alive && now >= p.respawnAt) {
+            this.giveDefaults(p);
+            p.money = E.WARMUP_MONEY;
+            this.spawn(p, -1);
+          }
+        }
+        const ready = this.teamCount('T') > 0 && this.teamCount('CT') > 0;
+        if (!ready) { this.phaseEnd = 0; break; }
+        if (!this.phaseEnd) this.phaseEnd = now + R.WARMUP * 1000;
+        if (now >= this.phaseEnd) this.startMatch();
+        break;
+      }
+      case 'freeze':
+        if (now >= this.phaseEnd) {
+          this.phase = 'live';
+          this.phaseEnd = now + R.LIVE * 1000;
+          this.io.to(this.id).emit('live', {});
+        }
+        break;
+      case 'live':
+        this.updateBomb(now);
+        if (this.phase !== 'live') break;
+        this.checkRoundEnd(now);
+        break;
+      case 'post':
+        this.updateBomb(now);
+        if (now >= this.phaseEnd) this.afterPost();
+        break;
+      case 'gameover':
+        if (now >= this.phaseEnd) {
+          this.phase = 'warmup';
+          this.phaseEnd = 0;
+          this.round = 0;
+          this.score = { T: 0, CT: 0 };
+          this.bomb = { state: 'none' };
+          this.resetWorld();
+          for (const p of this.players.values()) { p.alive = false; p.respawnAt = 0; p.kills = p.deaths = p.assists = p.mvps = 0; }
+        }
+        break;
+    }
+  }
+
+  updateBomb(now) {
+    const b = this.bomb;
+    if (b.state === 'carried') {
+      const c = this.players.get(b.carrier);
+      if (!c || !c.alive || c.team !== 'T') {
+        if (c) this.dropBombIfCarrier(c);
+        else this.bomb = { state: 'none' };
+        return;
+      }
+      const site = S.siteAt(c.x, c.z);
+      if (this.phase === 'live' && c.useHeld && site && c.onGround) {
+        if (!c.planting) c.planting = now;
+        if (now - c.planting >= BB.PLANT * 1000) this.plantBomb(c, site);
+      } else c.planting = 0;
+    } else if (b.state === 'dropped') {
+      for (const p of this.players.values()) {
+        if (p.alive && p.team === 'T' && Math.hypot(p.x - b.x, p.z - b.z) < BB.PICKUP_RANGE && Math.abs(p.y - b.y) < 2) {
+          this.bomb = { state: 'carried', carrier: p.id };
+          this.io.to(this.id).emit('bomb', { e: 'picked', by: p.name, id: p.id });
+          break;
+        }
+      }
+    } else if (b.state === 'planted') {
+      if (now >= b.explodeAt) {
+        this.explodeBomb();
+        if (this.phase === 'live') this.endRound('T', 'bomb');
+        return;
+      }
+      if (this.phase !== 'live') return;
+      // defusing
+      let def = b.defuser ? this.players.get(b.defuser) : null;
+      const inRange = (p) => p && p.alive && p.team === 'CT' && p.useHeld && p.onGround &&
+        Math.hypot(p.x - b.x, p.z - b.z) < BB.DEFUSE_RANGE && Math.abs(p.y - b.y) < 2;
+      if (!inRange(def)) {
+        if (def) def.defusing = 0;
+        def = null; b.defuser = null;
+        for (const p of this.players.values()) if (inRange(p)) { def = p; break; }
+        if (def) {
+          b.defuser = def.id; b.defuseStart = now; b.defuseDur = (def.kit ? BB.DEFUSE_KIT : BB.DEFUSE) * 1000;
+          def.defusing = now;
+          this.io.to(this.id).emit('bomb', { e: 'defusing', by: def.name, kit: def.kit ? 1 : 0 });
+        }
+      }
+      if (def && now - b.defuseStart >= b.defuseDur) {
+        b.state = 'defused';
+        def.defusing = 0;
+        def.money = Math.min(E.MAX, def.money + E.DEFUSE_REWARD);
+        this.io.to(this.id).emit('bomb', { e: 'defused', by: def.name, x: r2(b.x), y: r2(b.y), z: r2(b.z) });
+        this.endRound('CT', 'defuse');
+      }
+    }
+  }
+
+  checkRoundEnd(now) {
+    const tCount = this.teamCount('T'), ctCount = this.teamCount('CT');
+    const tAlive = this.aliveCount('T'), ctAlive = this.aliveCount('CT');
+    const planted = this.bomb.state === 'planted';
+    if (ctCount > 0 && ctAlive === 0) return this.endRound('T', 'elim');
+    if (ctCount === 0) return this.endRound('T', 'elim');
+    if (!planted && (tCount === 0 || tAlive === 0)) return this.endRound('CT', 'elim');
+    if (!planted && now >= this.phaseEnd) return this.endRound('CT', 'time');
+  }
+
+  // -------------------------------------------------------------------------
+  // TICK
+  // -------------------------------------------------------------------------
+  safeTick() {
+    try { this.tick(); } catch (err) { console.error('[room ' + this.id + '] tick error', err); }
+  }
+
+  tick() {
+    const real = Date.now();
+    const elapsed = Math.min(0.25, (real - this.lastTickReal) / 1000);
+    this.lastTickReal = real;
+    const now = this.now();
+    this.tickCount++;
+
+    for (const b of this.bots.values()) b.think(now);
+
+    const stepDt = 1 / CONFIG.INPUT_RATE;
+    for (const p of this.players.values()) {
+      p.budget = Math.min(p.budget + elapsed * 1.02, 0.3);
+      // reload / weapon timers
+      if (p.reloadEnd && now >= p.reloadEnd) {
+        const ws = p.weapons[p.slot];
+        if (ws) {
+          const w = WEAPONS[ws.id];
+          const need = w.mag - ws.ammo;
+          const take = Math.min(need, ws.reserve);
+          ws.ammo += take; ws.reserve -= take;
+        }
+        p.reloadEnd = 0;
+      }
+      while (p.inputQueue.length && p.budget >= stepDt * 0.999) {
+        const inp = p.inputQueue.shift();
+        p.budget -= stepDt;
+        this.applyInput(p, inp, stepDt);
+      }
+      if (p.alive) {
+        p.history.push({ t: now, x: p.x, y: p.y, z: p.z, crouch: p.crouch });
+        while (p.history.length && p.history[0].t < now - 1000) p.history.shift();
+      }
+    }
+
+    this.updateGame(this.now());
+
+    if (this.pendingBlocks.length) {
+      this.io.to(this.id).emit('blocks', this.pendingBlocks);
+      this.pendingBlocks = [];
+    }
+    this.sendSnapshots(now);
+  }
+
+  applyInput(p, inp, dt) {
+    p.lastSeq = inp.seq;
+    p.yaw = inp.yaw; p.pitch = inp.pitch;
+    p.buttons = inp.b;
+    if (!p.alive) { p.useHeld = false; return; }
+    p.useHeld = !!(inp.b & BTN.USE);
+    const frozen = this.phase === 'freeze' || this.phase === 'gameover' || !!p.planting || !!p.defusing;
+    const ws = p.weapons[p.slot];
+    const ev = S.stepPlayer(p, inp, dt, this.world, { speedMul: S.weaponSpeedMul(ws ? ws.id : 'knife', p.scoped > 0), frozen });
+    if (ev.landSpeed > CONFIG.FALL.SAFE_SPEED) {
+      const dmg = Math.round((ev.landSpeed - CONFIG.FALL.SAFE_SPEED) * CONFIG.FALL.DMG_PER);
+      if (dmg > 0) {
+        p.hp -= dmg;
+        if (p.socket) p.socket.emit('dmg', { d: dmg, f: null, hs: 0 });
+        if (p.hp <= 0) this.killPlayer(p, null, 'fall', false);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // SNAPSHOTS
+  // -------------------------------------------------------------------------
+  bombPublic(now) {
+    const b = this.bomb;
+    const o = { s: b.state };
+    if (b.state === 'carried') o.c = b.carrier;
+    if (b.state === 'dropped' || b.state === 'planted' || b.state === 'defused' || b.state === 'exploded') { o.x = r2(b.x); o.y = r2(b.y); o.z = r2(b.z); }
+    if (b.state === 'planted') {
+      o.ex = b.explodeAt; o.site = b.site;
+      if (b.defuser) o.dp = r3(Math.min(1, (now - b.defuseStart) / b.defuseDur));
+    }
+    return o;
+  }
+
+  roster() {
+    return [...this.players.values()].map((p) => ({
+      i: p.id, n: p.name, t: p.team, k: p.kills, d: p.deaths, a: p.assists, mv: p.mvps,
+      m: p.money, pg: p.isBot ? 0 : p.ping, bt: p.isBot ? 1 : 0, al: p.alive ? 1 : 0, nu: p.num
+    }));
+  }
+
+  youState(p, now) {
+    const wp = {};
+    for (const s of [1, 2, 3]) { const ws = p.weapons[s]; wp[s] = ws ? [ws.id, ws.ammo, ws.reserve] : null; }
+    const y = {
+      s: p.lastSeq, x: r3(p.x), y: r3(p.y), z: r3(p.z), vx: r3(p.vx), vy: r3(p.vy), vz: r3(p.vz),
+      og: p.onGround ? 1 : 0, c: p.crouch ? 1 : 0, a: p.alive ? 1 : 0, tm: p.team,
+      hp: Math.max(0, p.hp), ar: p.armor, hm: p.helmet ? 1 : 0, kt: p.kit ? 1 : 0, m: p.money,
+      sl: p.slot, wp, rl: p.reloadEnd ? Math.max(0, p.reloadEnd - now) : 0, dr: Math.max(0, p.drawEnd - now),
+      ss: p.lastShotSeq, sc: p.scoped, cb: this.canBuy(p) ? 1 : 0
+    };
+    if (p.planting) y.pl = r3(Math.min(1, (now - p.planting) / (BB.PLANT * 1000)));
+    if (p.forceSync) { y.fs = 1; y.yw = r3(p.yaw); y.pt = r3(p.pitch); p.forceSync = false; }
+    return y;
+  }
+
+  sendSnapshots(now) {
+    const pubs = [];
+    for (const p of this.players.values()) {
+      if (p.team !== 'T' && p.team !== 'CT') continue;
+      const ws = p.weapons[p.slot];
+      pubs.push({
+        i: p.id, x: r2(p.x), y: r2(p.y), z: r2(p.z), yw: r3(p.yaw), pt: r3(p.pitch),
+        vx: r2(p.vx), vz: r2(p.vz), c: p.crouch ? 1 : 0, a: p.alive ? 1 : 0, g: p.onGround ? 1 : 0,
+        t: p.team, w: ws ? ws.id : 'knife', h: Math.max(0, p.hp), rl: p.reloadEnd ? 1 : 0,
+        pl: p.planting ? 1 : 0, df: p.defusing ? 1 : 0
+      });
+    }
+    const base = {
+      t: now, ph: this.phase, pe: this.phaseEnd, rd: this.round, sc: this.score, be: this.buyEnd,
+      b: this.bombPublic(now), p: pubs
+    };
+    if (this.tickCount % 15 === 1) base.r = this.roster();
+    for (const p of this.players.values()) {
+      if (!p.socket) continue;
+      const msg = Object.assign({}, base, { y: this.youState(p, now) });
+      p.socket.volatile.emit('snap', msg);
+    }
+  }
+
+  broadcastMsg(text) { this.io.to(this.id).emit('msg', { text }); }
+
+  initPayload(p) {
+    return {
+      id: p.id, num: p.num, room: this.id, t: this.now(), blocks: this.worldDiff(), roster: this.roster(),
+      version: CONFIG.VERSION
+    };
+  }
+}
+
+module.exports = Room;

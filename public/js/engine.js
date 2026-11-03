@@ -188,10 +188,11 @@ function program(gl, vs, fs) {
 const LIGHTS_GLSL = `
 uniform vec4 uLights[4];   // xyz pos, w intensity
 uniform vec3 uLightCol[4];
+uniform int uLightCount;
 vec3 flashLight(vec3 wp, vec3 n) {
   vec3 acc = vec3(0.0);
   for (int i = 0; i < 4; i++) {
-    if (uLights[i].w <= 0.0) continue;
+    if (i >= uLightCount) break;
     vec3 d = uLights[i].xyz - wp;
     float dist2 = dot(d, d);
     float ndl = max(dot(n, normalize(d)), 0.0) * 0.7 + 0.3;
@@ -443,6 +444,8 @@ export class Renderer {
     this.sun = normalize3([0.45, 0.8, 0.35]);
     this.lights = new Float32Array(16);
     this.lightCols = new Float32Array(12);
+    this.lightCount = 0;
+    this.dynamicLights = true;
     this.stats = { draws: 0, instances: 0, tris: 0 };
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
@@ -492,7 +495,8 @@ export class Renderer {
     // list: [{x,y,z,i,c:[r,g,b]}] max 4
     this.lights.fill(0);
     this.lightCols.fill(0);
-    for (let i = 0; i < Math.min(4, list.length); i++) {
+    this.lightCount = this.dynamicLights === false ? 0 : Math.min(4, list.length);
+    for (let i = 0; i < this.lightCount; i++) {
       const l = list[i];
       this.lights[i * 4] = l.x; this.lights[i * 4 + 1] = l.y; this.lights[i * 4 + 2] = l.z; this.lights[i * 4 + 3] = l.i;
       this.lightCols[i * 3] = l.c[0]; this.lightCols[i * 3 + 1] = l.c[1]; this.lightCols[i * 3 + 2] = l.c[2];
@@ -513,6 +517,7 @@ export class Renderer {
     gl.uniform3fv(P.u.uFogCol, this.fogColor);
     gl.uniform4fv(P.u.uLights, this.lights);
     gl.uniform3fv(P.u.uLightCol, this.lightCols);
+    gl.uniform1i(P.u.uLightCount, this.lightCount);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
     gl.uniform1i(P.u.uTex, 0);
@@ -528,6 +533,7 @@ export class Renderer {
     gl.uniform1f(P.u.uAmbient, (opts && opts.ambient) || this.theme.ambient || 0.55);
     gl.uniform4fv(P.u.uLights, (opts && opts.noLights) ? this.zeroLights : this.lights);
     gl.uniform3fv(P.u.uLightCol, this.lightCols);
+    gl.uniform1i(P.u.uLightCount, (opts && opts.noLights) ? 0 : this.lightCount);
   }
   setBlend(mode) {
     const gl = this.gl;

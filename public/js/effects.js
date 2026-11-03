@@ -5,7 +5,8 @@
 const S = window.SHARED;
 const { BLOCK_INFO } = S;
 
-const MAX_PARTICLES = 600;
+let MAX_PARTICLES = 600;
+export function setParticleBudget(n) { MAX_PARTICLES = n; }
 const MAX_DECALS = 90;
 
 export class Effects {
@@ -149,14 +150,15 @@ export class Effects {
       const fade = age > G.duration - 2.5 ? (G.duration - age) / 2.5 : 1;
       const rng = S.mulberry32(sm.id * 7919);
       const R = G.radius * (0.35 + 0.65 * grow);
-      for (let i = 0; i < 70; i++) {
+      const cubes = this.smokeCubes || 70;
+      for (let i = 0; i < cubes; i++) {
         const u = rng() * 2 - 1, th = rng() * Math.PI * 2, rr = Math.cbrt(rng());
         const q = Math.sqrt(1 - u * u);
         const swirl = Math.sin(age * 0.6 + i) * 0.25;
         const x = sm.x + q * Math.cos(th + swirl * 0.2) * R * rr;
         const y = sm.y + u * R * rr * 0.55 + age * 0.04;
         const zz = sm.z + q * Math.sin(th + swirl * 0.2) * R * rr;
-        const size = (1.1 + rng() * 0.9) * (0.5 + 0.5 * grow);
+        const size = (1.1 + rng() * 0.9) * (0.5 + 0.5 * grow) * (cubes < 70 ? 1.25 : 1);
         const shade = 0.72 + rng() * 0.16;
         alpha.pushAABB(x, Math.max(1, y), zz, size, size, size, shade, shade, shade * 1.02, (rr < 0.6 ? 0.82 : 0.5) * fade, 0.25);
       }

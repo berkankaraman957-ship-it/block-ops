@@ -1007,12 +1007,11 @@ class Room {
     const pubs = [];
     for (const p of this.players.values()) {
       if (p.team !== 'T' && p.team !== 'CT') continue;
-      pubs.push({
-        i: p.id, x: r2(p.x), y: r2(p.y), z: r2(p.z), yw: r3(p.yaw), pt: r3(p.pitch),
-        vx: r2(p.vx), vz: r2(p.vz), c: p.crouch ? 1 : 0, a: p.alive ? 1 : 0, g: p.onGround ? 1 : 0,
-        t: p.team, w: this.currentWeaponId(p), h: Math.max(0, p.hp), rl: p.reloadEnd ? 1 : 0,
-        pl: p.planting ? 1 : 0, df: p.defusing ? 1 : 0
-      });
+      // compact wire format (≈45% smaller than named objects):
+      // [id, x, y, z, yaw, pitch, vx, vz, flags, team(0=T,1=CT), weapon, hp]
+      const flags = (p.crouch ? 1 : 0) | (p.alive ? 2 : 0) | (p.onGround ? 4 : 0) | (p.reloadEnd ? 8 : 0) | (p.planting ? 16 : 0) | (p.defusing ? 32 : 0);
+      pubs.push([p.id, r2(p.x), r2(p.y), r2(p.z), r3(p.yaw), r3(p.pitch), Math.round(p.vx * 10) / 10, Math.round(p.vz * 10) / 10,
+        flags, p.team === 'CT' ? 1 : 0, this.currentWeaponId(p), Math.max(0, p.hp)]);
     }
     const base = {
       t: now, ph: this.phase, pe: this.phaseEnd, rd: this.round, sc: this.score, be: this.buyEnd,

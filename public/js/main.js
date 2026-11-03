@@ -8,7 +8,7 @@ import { Renderer, BoxBatch, M4, Node } from './engine.js';
 import { WorldRenderer } from './world.js';
 import { ViewModel } from './viewmodel.js';
 import { Avatar, buildBomb, buildGun } from './models.js';
-import { Effects } from './effects.js';
+import { Effects, setParticleBudget } from './effects.js';
 import { Sfx } from './audio.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
@@ -47,6 +47,20 @@ class Game {
     // MSAA (smooth edges) everywhere except "low"
     this.renderer = new Renderer(this.canvas, { antialias: q !== 'low', pixelRatio: this.maxRatio });
     this.lastScaleDown = 0;
+    // per-quality budgets (CPU + GPU)
+    const low = q === 'low', mid = q === 'medium' || (q === 'auto' && isTouch);
+    this.perf = {
+      particles: low ? 150 : mid ? 300 : 600,
+      smokeCubes: low ? 34 : mid ? 50 : 70,
+      clouds: !low,
+      dynamicLights: !low,
+      hudHz: isTouch ? 20 : 30,
+      radarHz: low || isTouch ? 10 : 20,
+      chunkBudgetMs: isTouch ? 3 : 5
+    };
+    setParticleBudget(this.perf.particles);
+    this.renderer.dynamicLights = this.perf.dynamicLights;
+    this.hudAt = 0; this.tagsAt = 0;
     this.frameTimes = []; this.lastScaleCheck = performance.now();
     this.detectGpu();
     this.opaque = new BoxBatch(this.renderer, 2048);
@@ -58,6 +72,7 @@ class Game {
     this.world = new S.VoxelWorld();
     this.worldR = new WorldRenderer(this.renderer, this.world);
     this.fx = new Effects(this.world);
+    this.fx.smokeCubes = this.perf.smokeCubes;
     this.vm = new ViewModel();
     this.sfx = new Sfx();
     this.sfx.setVolume(this.settings.vol);
@@ -580,7 +595,11 @@ class Game {
 
     // --- remote entities
     const seen = new Set();
-    for (const p of m.p) {
+    for (const a of m.p) {
+      const f = a[8];
+      const p = { i: a[0], x: a[1], y: a[2], z: a[3], yw: a[4], pt: a[5], vx: a[6], vz: a[7],
+        c: f & 1, a: (f >> 1) & 1, g: (f >> 2) & 1, rl: (f >> 3) & 1, pl: (f >> 4) & 1, df: (f >> 5) & 1,
+        t: a[9] ? 'CT' : 'T', w: a[10], h: a[11] };
       if (p.i === this.myId) { this.myPub = p; continue; }
       seen.add(p.i);
       let r = this.remotes.get(p.i);
@@ -933,7 +952,7 @@ class Game {
     }
     this.fov = this.alive ? fov : 78;
     this.worldR.focus = this.camPos;
-    this.worldR.update(16, isTouch ? 3 : 5);
+    this.worldR.update(16, this.perf.chunkBudgetMs);
     this.fx.update(dt);
 
     // --- view model
@@ -971,11 +990,13 @@ class Game {
     const flashLeft = this.flashUntil - now;
     const flash = flashLeft > 0 ? Math.min(1, flashLeft / (this.flashDur * 0.6)) : 0;
     // radar (20 Hz)
-    if (now - this.lastRadar > 50) { this.lastRadar = now; this.updateRadar(now); }
+    if (now - this.lastRadar > 1000 / this.perf.radarHz) { this.lastRadar = now; this.updateRadar(now); }
     let progress = null;
     if (this.you && this.you.pl > 0) progress = { label: 'BOMBA KURULUYOR...', f: this.you.pl };
     else if (b && b.dp && this.myPub && this.myPub.df) progress = { label: 'BOMBA İMHA EDİLİYOR...', f: b.dp };
-    this.hud.update({
+    const hudDue = now - this.hudAt >= 1000 / this.perf.hudHz || flash > 0;
+    if (hudDue) this.hudAt = now;
+    if (hudDue) this.hud.update({
       phase: this.phase, phaseEnd: this.phaseEnd, serverNow, round: this.round, score: this.score, you: this.you,
       ammo, reserve, weaponId: this.curWeaponId(), slots: this.you ? this.you.wp : {}, slot: this.slot,
       spreadPx: Math.min(60, (spreadDeg + recoilSpread) * pxPerDeg), scoped: this.alive && this.scoped > 0,
@@ -1092,7 +1113,7 @@ class Game {
     const O = this.opaque, A = this.alphaBatch, D = this.addBatch;
     O.clear(); A.clear(); D.clear();
     // clouds + sun
-    for (const c of this.clouds) {
+    if (this.perf.clouds) for (const c of this.clouds) {
       c.x += dt * 0.6; if (c.x > 130) c.x = -70;
       O.pushAABB(c.x, c.y, c.z, c.sx, 2, c.sz, 0.97, 0.98, 1, 1, 1);
     }
@@ -1112,10 +1133,13 @@ class Game {
     }
     // avatars
     const me = this.myId;
+    const planes = this.worldR.planesFrom(this.vp);
+    const visible = (x, y, z, rad) => { for (const pl of planes) if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -rad) return false; return true; };
     for (const [id, r] of this.remotes) {
       if (!r.state) continue;
       if (!this.alive && id === this.specTarget) continue;
       if (!r.state.alive && r.deadAt && performance.now() - r.deadAt > 8000) continue;
+      if (!visible(r.state.x, r.state.y + 1, r.state.z, 1.4)) continue;
       r.avatar.root.render(O);
     }
     // bomb
@@ -1149,7 +1173,8 @@ class Game {
     const showVm = this.inGame && (this.alive || (this.specTarget && this.remotes.get(this.specTarget)));
     if (showVm) this.vm.render(R, this.vmBatch, this.vmAdd, this.view, 56);
 
-    this.updateTags();
+    const tnow = performance.now();
+    if (tnow - this.tagsAt > 33) { this.tagsAt = tnow; this.updateTags(); }
   }
 
   updateTags() {

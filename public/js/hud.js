@@ -76,7 +76,7 @@ export class HUD {
       this.set('arBar', y.ar + '%', 'width');
       this.set('armorIco', y.hm ? '⛑' : '⛨');
       this.set('money', '$' + y.m);
-      if (this.lastMoney !== null && y.m !== this.lastMoney) {
+      if (this.lastMoney !== null && y.m !== this.lastMoney && Math.abs(y.m - this.lastMoney) <= 6000) {
         const d = y.m - this.lastMoney, el = $('moneyDelta');
         el.textContent = (d > 0 ? '+$' : '-$') + Math.abs(d);
         el.style.color = d > 0 ? 'var(--money)' : 'var(--bad)';

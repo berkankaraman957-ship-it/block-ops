@@ -226,69 +226,109 @@ export class WorldRenderer {
     }
     return 1;
   }
+  /**
+   * Greedy mesher: per face direction and slice, faces with identical texture and
+   * uniform lighting are merged into large quads (textures tile via REPEAT, so they still
+   * look per-block). Faces with AO / shadow gradients stay per-block for correct shading.
+   */
   build(c) {
     const W = this.world, CS = this.CS;
     let out = this.scratch, n = 0;
-    const x0 = c.x * CS, y0 = c.y * CS, z0 = c.z * CS;
+    const base = [c.x * CS, c.y * CS, c.z * CS];
+    const ext = [Math.min(CS, W.sx - base[0]), Math.min(CS, W.sy - base[1]), Math.min(CS, W.sz - base[2])];
+    const N = CS * CS;
+    const mT = this._mT || (this._mT = new Uint8Array(N));
+    const mS = this._mS || (this._mS = new Float32Array(N * 4));
+    const mA = this._mA || (this._mA = new Uint8Array(N * 4));
+    const mU = this._mU || (this._mU = new Uint8Array(N));
     const p = [0, 0, 0], q = [0, 0, 0], pos = [0, 0, 0];
     const solid = (x, y, z) => W.get(x, y, z) !== 0;
-    const sun = this.sun;
-    const shadowK = this.shadowStrength;
-    const verts = [{}, {}, {}, {}];
-    for (let y = y0; y < y0 + CS && y < W.sy; y++) {
-      for (let z = z0; z < z0 + CS && z < W.sz; z++) {
-        for (let x = x0; x < x0 + CS && x < W.sx; x++) {
-          const t = W.data[W.idx(x, y, z)];
+    const sun = this.sun, shadowK = this.shadowStrength;
+    for (const f of FACES) {
+      const A = f.a, U = f.u, V = f.v;
+      const nx = A === 0 ? f.s : 0, ny = A === 1 ? f.s : 0, nz = A === 2 ? f.s : 0;
+      const ndl = Math.max(0, nx * sun[0] + ny * sun[1] + nz * sun[2]);
+      const faceBase = 0.6 + (A === 1 ? (f.s > 0 ? 0.06 : -0.15) : 0);
+      for (let d = 0; d < ext[A]; d++) {
+        // ---- 1) build the face mask for this slice
+        for (let j = 0; j < ext[V]; j++) for (let i = 0; i < ext[U]; i++) {
+          const mi = j * CS + i;
+          mT[mi] = 0;
+          p[A] = base[A] + d; p[U] = base[U] + i; p[V] = base[V] + j;
+          const t = W.data[W.idx(p[0], p[1], p[2])];
           if (!t) continue;
-          const tint = 0.9 + 0.1 * S.hash3(x, y, z);
-          for (const f of FACES) {
-            p[0] = x; p[1] = y; p[2] = z;
-            p[f.a] += f.s;
-            if (solid(p[0], p[1], p[2])) continue;
-            if (f.a === 1 && f.s < 0 && y === 0) continue;
-            const nx = f.a === 0 ? f.s : 0, ny = f.a === 1 ? f.s : 0, nz = f.a === 2 ? f.s : 0;
-            const ndl = Math.max(0, nx * sun[0] + ny * sun[1] + nz * sun[2]);
-            const faceBase = (0.6 + (f.a === 1 ? (f.s > 0 ? 0.06 : -0.15) : 0)) * tint;
-            for (let k = 0; k < 4; k++) {
-              const cu = CORNERS[k][0], cv = CORNERS[k][1];
-              q[0] = p[0]; q[1] = p[1]; q[2] = p[2];
-              const du = cu ? 1 : -1, dv = cv ? 1 : -1;
-              q[f.u] += du; const s1 = solid(q[0], q[1], q[2]) ? 1 : 0;
-              q[f.u] -= du; q[f.v] += dv; const s2 = solid(q[0], q[1], q[2]) ? 1 : 0;
-              q[f.u] += du; const s3 = solid(q[0], q[1], q[2]) ? 1 : 0;
-              const ao = s1 && s2 ? 0 : 3 - (s1 + s2 + s3);
-              pos[0] = x; pos[1] = y; pos[2] = z;
-              if (f.s > 0) pos[f.a] += 1;
-              pos[f.u] += cu; pos[f.v] += cv;
-              // sun shadow from the light grid: average the air cells touching this vertex in front of the face
-              let lit = 0;
-              if (ndl > 0.01) {
-                let sum = 0, cnt = 0;
-                for (let a2 = -1; a2 <= 0; a2++) for (let b2 = -1; b2 <= 0; b2++) {
-                  q[0] = p[0]; q[1] = p[1]; q[2] = p[2];
-                  q[f.u] += cu + a2; q[f.v] += cv + b2;
-                  const l = this.litAt(q[0], q[1], q[2]);
-                  if (l >= 0) { sum += l; cnt++; }
-                }
-                lit = cnt ? (sum / cnt / 255) * ndl : 0;
+          if (A === 1 && f.s < 0 && p[1] === 0) continue;
+          q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[A] += f.s;
+          if (solid(q[0], q[1], q[2])) continue;
+          const fp0 = q[0], fp1 = q[1], fp2 = q[2];
+          let uni = 1;
+          for (let k = 0; k < 4; k++) {
+            const cu = CORNERS[k][0], cv = CORNERS[k][1];
+            q[0] = fp0; q[1] = fp1; q[2] = fp2;
+            const du = cu ? 1 : -1, dv = cv ? 1 : -1;
+            q[U] += du; const s1 = solid(q[0], q[1], q[2]) ? 1 : 0;
+            q[U] -= du; q[V] += dv; const s2 = solid(q[0], q[1], q[2]) ? 1 : 0;
+            q[U] += du; const s3 = solid(q[0], q[1], q[2]) ? 1 : 0;
+            const ao = s1 && s2 ? 0 : 3 - (s1 + s2 + s3);
+            let lit = 0;
+            if (ndl > 0.01) {
+              let sum = 0, cnt = 0;
+              for (let a2 = -1; a2 <= 0; a2++) for (let b2 = -1; b2 <= 0; b2++) {
+                q[0] = fp0; q[1] = fp1; q[2] = fp2;
+                q[U] += cu + a2; q[V] += cv + b2;
+                const l = this.litAt(q[0], q[1], q[2]);
+                if (l >= 0) { sum += l; cnt++; }
               }
-              const light = faceBase + 0.45 * lit - (ndl > 0.01 ? shadowK * 0.12 * (1 - lit / ndl) : 0);
-              const v = verts[k];
-              v.x = pos[0]; v.y = pos[1]; v.z = pos[2];
-              v.tu = f.a === 0 ? cv : cu; v.tv = f.a === 0 ? cu : cv;
-              v.shade = light * AO_CURVE[ao];
-              v.ao = ao;
+              lit = cnt ? (sum / cnt / 255) * ndl : 0;
             }
-            const flip = verts[0].ao + verts[2].ao < verts[1].ao + verts[3].ao;
-            const ord = flip ? (f.s > 0 ? [1, 2, 3, 1, 3, 0] : [1, 3, 2, 1, 0, 3]) : (f.s > 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
+            const light = faceBase + 0.45 * lit - (ndl > 0.01 ? shadowK * 0.12 * (1 - lit / ndl) : 0);
+            const shade = Math.round(light * AO_CURVE[ao] * 128) / 128;
+            mS[mi * 4 + k] = shade;
+            mA[mi * 4 + k] = ao;
+            if (k > 0 && (shade !== mS[mi * 4] || ao !== mA[mi * 4])) uni = 0;
+          }
+          mT[mi] = t;
+          mU[mi] = uni;
+        }
+        // ---- 2) greedy merge + emit
+        const same = (mi, t, s) => mT[mi] === t && mU[mi] === 1 && mS[mi * 4] === s;
+        for (let j = 0; j < ext[V]; j++) {
+          for (let i = 0; i < ext[U];) {
+            const mi = j * CS + i;
+            const t = mT[mi];
+            if (!t) { i++; continue; }
+            let w = 1, h = 1;
+            if (mU[mi]) {
+              const s = mS[mi * 4];
+              while (i + w < ext[U] && same(mi + w, t, s)) w++;
+              outer: while (j + h < ext[V]) {
+                for (let k = 0; k < w; k++) if (!same((j + h) * CS + i + k, t, s)) break outer;
+                h++;
+              }
+            }
+            const s0 = mS[mi * 4], s1 = mS[mi * 4 + 1], s2 = mS[mi * 4 + 2], s3 = mS[mi * 4 + 3];
+            const a0 = mA[mi * 4], a1 = mA[mi * 4 + 1], a2 = mA[mi * 4 + 2], a3 = mA[mi * 4 + 3];
+            for (let jj = 0; jj < h; jj++) for (let ii = 0; ii < w; ii++) mT[(j + jj) * CS + i + ii] = 0;
             if (n + 72 > out.length) { const bigger = new Float32Array(out.length * 2); bigger.set(out); out = this.scratch = bigger; }
+            const shades = [s0, s1, s2, s3];
+            const flip = a0 + a2 < a1 + a3;
+            const ord = flip ? (f.s > 0 ? [1, 2, 3, 1, 3, 0] : [1, 3, 2, 1, 0, 3]) : (f.s > 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
+            const bright = t === BLOCK.SNOW || t === BLOCK.ICE ? 1.03 : 1;
             for (const k of ord) {
-              const v = verts[k];
-              out[n++] = v.x; out[n++] = v.y; out[n++] = v.z;
-              out[n++] = v.tu; out[n++] = 1 - v.tv; out[n++] = t;
-              out[n++] = v.shade; out[n++] = v.shade; out[n++] = v.shade * (t === BLOCK.SNOW || t === BLOCK.ICE ? 1.03 : 1);
+              const cu = CORNERS[k][0], cv = CORNERS[k][1];
+              pos[A] = base[A] + d + (f.s > 0 ? 1 : 0);
+              pos[U] = base[U] + i + cu * w;
+              pos[V] = base[V] + j + cv * h;
+              // world-aligned texture coordinates (V follows world Y on walls)
+              let tu, tv;
+              if (A === 0) { tu = pos[2]; tv = pos[1]; } else if (A === 1) { tu = pos[2]; tv = pos[0]; } else { tu = pos[0]; tv = pos[1]; }
+              const sh = shades[k];
+              out[n++] = pos[0]; out[n++] = pos[1]; out[n++] = pos[2];
+              out[n++] = tu; out[n++] = -tv; out[n++] = t;
+              out[n++] = sh; out[n++] = sh; out[n++] = sh * bright;
               out[n++] = nx; out[n++] = ny; out[n++] = nz;
             }
+            i += w;
           }
         }
       }

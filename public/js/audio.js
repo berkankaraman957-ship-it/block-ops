@@ -1,7 +1,8 @@
 /*
  * Fully synthesized positional audio (WebAudio) — no sound files.
  * Gunshots = filtered noise burst + low thump + tail; footsteps; reload clicks;
- * hit/headshot ticks; bomb beeps; explosion; UI blips.
+ * hit/headshot ticks; bomb beeps; explosion; UI blips; per-map ambience (wind, waves + gulls,
+ * snowy gusts, fortress birds, city hum) — all generated live, nothing downloaded.
  */
 const GUN_SFX = {
   knife: { f: 2600, q: 0.8, dur: 0.12, vol: 0.25, thump: 0, swish: true },
@@ -29,6 +30,9 @@ export class Sfx {
     this.master = null;
     this.volume = 0.7;
     this.noise = null;
+    this.ambVol = 0.5;
+    this.ambTheme = null;
+    this.amb = null;
   }
   unlock() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
@@ -158,6 +162,82 @@ export class Sfx {
   }
   ui(ok) { if (this.ctx) this.tone(this.master, this.ctx.currentTime, ok === false ? 260 : 820, ok === false ? 200 : 980, 0.08, 0.15, 'triangle'); }
   roundStart() { if (this.ctx) { const t = this.ctx.currentTime; [523, 659, 784].forEach((f, i) => this.tone(this.master, t + i * 0.09, f, f, 0.18, 0.18, 'triangle')); } }
+  // ---------------------------------------------------------------- new grenades
+  molotovBurst(pos) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime, d = this.out(pos);
+    this.noiseBurst(d, t, 0.18, 3000, 0.8, 0.6, 'highpass');                // glass
+    this.tone(d, t, 2400, 1800, 0.08, 0.15, 'triangle');
+    this.noiseBurst(d, t + 0.05, 1.2, 500, 0.5, 0.7, 'lowpass');              // whoosh
+  }
+  fireCrackle(pos) { if (this.ctx) this.noiseBurst(this.out(pos), this.ctx.currentTime, 0.05 + Math.random() * 0.08, 1500 + Math.random() * 2500, 2, 0.12 + Math.random() * 0.1); }
+  fireOut(pos) { if (this.ctx) this.noiseBurst(this.out(pos), this.ctx.currentTime, 1.0, 4000, 0.4, 0.4, 'highpass'); }
+  c4Stick(pos) { if (this.ctx) { const t = this.ctx.currentTime, d = this.out(pos); this.tone(d, t, 300, 200, 0.06, 0.4, 'square'); this.tone(d, t + 0.25, 1800, 1800, 0.05, 0.25, 'sine'); this.tone(d, t + 0.75, 1800, 1800, 0.05, 0.25, 'sine'); this.tone(d, t + 1.2, 2200, 2200, 0.05, 0.3, 'sine'); } }
+  breachBlast(pos) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime, d = this.out(pos);
+    this.noiseBurst(d, t, 1.6, 260, 0.4, 1.0, 'lowpass');
+    this.noiseBurst(d, t + 0.02, 0.9, 900, 0.5, 0.7, 'bandpass');               // debris
+    this.tone(d, t, 120, 28, 0.9, 1.0, 'sine');
+  }
+  levelUp() { if (this.ctx) { const t = this.ctx.currentTime; [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(this.master, t + i * 0.08, f, f, 0.25, 0.2, 'triangle')); } }
+  coin() { if (this.ctx) { const t = this.ctx.currentTime; this.tone(this.master, t, 1318, 1318, 0.08, 0.18, 'square'); this.tone(this.master, t + 0.07, 1760, 1760, 0.16, 0.18, 'square'); } }
+
+  // ---------------------------------------------------------------- ambience
+  setAmbienceVolume(v) { this.ambVol = v; if (this.amb) this.amb.gain.gain.setTargetAtTime(v * 0.5, this.ctx.currentTime, 0.3); }
+  /** theme: 'desert' | 'harbor' | 'snow' | 'fortress' | 'city' | null (stop) */
+  ambience(theme) {
+    if (!this.ctx || theme === this.ambTheme) return;
+    this.ambTheme = theme;
+    const c = this.ctx;
+    if (this.amb) {
+      const old = this.amb;
+      old.gain.gain.setTargetAtTime(0.0001, c.currentTime, 0.4);
+      setTimeout(() => { old.nodes.forEach((n) => { try { n.stop ? n.stop() : n.disconnect(); } catch (e) { /* ignore */ } }); clearInterval(old.timer); }, 2000);
+      this.amb = null;
+    }
+    if (!theme) return;
+    const gain = c.createGain();
+    gain.gain.value = 0.0001;
+    gain.gain.setTargetAtTime(this.ambVol * 0.5, c.currentTime, 1.2);
+    gain.connect(this.master);
+    const nodes = [];
+    const loopNoise = (type, f, q, vol, lfoHz, lfoDepth) => {
+      const src = c.createBufferSource(); src.buffer = this.noise; src.loop = true; src.playbackRate.value = 0.6;
+      const filt = c.createBiquadFilter(); filt.type = type; filt.frequency.value = f; filt.Q.value = q;
+      const g = c.createGain(); g.gain.value = vol;
+      src.connect(filt); filt.connect(g); g.connect(gain);
+      if (lfoHz) {
+        const lfo = c.createOscillator(); lfo.frequency.value = lfoHz;
+        const lg = c.createGain(); lg.gain.value = lfoDepth;
+        lfo.connect(lg); lg.connect(g.gain); lfo.start(); nodes.push(lfo);
+        const lfo2 = c.createOscillator(); lfo2.frequency.value = lfoHz * 0.37;
+        const lg2 = c.createGain(); lg2.gain.value = f * 0.35;
+        lfo2.connect(lg2); lg2.connect(filt.frequency); lfo2.start(); nodes.push(lfo2);
+      }
+      src.start(); nodes.push(src, filt, g);
+    };
+    let events = null;
+    if (theme === 'desert') { loopNoise('bandpass', 520, 0.6, 0.22, 0.07, 0.12); events = () => this.tone(gain, c.currentTime, 2400, 2100, 0.12, 0.05, 'sine'); }
+    else if (theme === 'harbor') {
+      loopNoise('lowpass', 420, 0.5, 0.3, 0.11, 0.22);           // waves
+      events = () => { const t = c.currentTime, f = 1700 + Math.random() * 500; this.tone(gain, t, f, f * 0.7, 0.25, 0.06, 'triangle'); this.tone(gain, t + 0.3, f * 1.05, f * 0.6, 0.3, 0.05, 'triangle'); };
+    } else if (theme === 'snow') { loopNoise('highpass', 1400, 0.4, 0.12, 0.09, 0.1); loopNoise('bandpass', 300, 0.7, 0.12, 0.05, 0.08); }
+    else if (theme === 'fortress') {
+      loopNoise('bandpass', 380, 0.5, 0.14, 0.06, 0.08);
+      events = () => { const t = c.currentTime, f = 2800 + Math.random() * 1200; for (let i = 0; i < 3; i++) this.tone(gain, t + i * 0.11, f, f * 1.15, 0.07, 0.05, 'sine'); };
+    } else if (theme === 'city') {
+      const hum = c.createOscillator(); hum.type = 'sawtooth'; hum.frequency.value = 55;
+      const hf = c.createBiquadFilter(); hf.type = 'lowpass'; hf.frequency.value = 160;
+      const hg = c.createGain(); hg.gain.value = 0.05;
+      hum.connect(hf); hf.connect(hg); hg.connect(gain); hum.start(); nodes.push(hum);
+      loopNoise('lowpass', 260, 0.5, 0.18, 0.04, 0.1);           // distant traffic
+      events = () => this.noiseBurst(gain, c.currentTime, 1.8, 600 + Math.random() * 400, 0.6, 0.06, 'bandpass');
+    }
+    const timer = events ? setInterval(() => { if (Math.random() < 0.35) events(); }, 2500) : null;
+    this.amb = { gain, nodes, timer };
+  }
+
   roundEnd(win) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;

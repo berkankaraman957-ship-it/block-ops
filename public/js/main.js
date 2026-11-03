@@ -16,9 +16,12 @@ import { Net } from './net.js';
 import { Voice } from './voice.js';
 import { Friends } from './friends.js';
 import { LayoutEditor } from './layout.js';
+import { Account } from './account.js';
 
 const S = window.SHARED;
 const { CONFIG, WEAPONS, BTN } = S;
+const COS = window.COSMETICS;
+const KILLCAM_FALL = 900, KILLCAM_LEN = 3000, KILLCAM_BEFORE = 2500;
 const STEP = 1 / CONFIG.INPUT_RATE;
 const $ = (id) => document.getElementById(id);
 
@@ -76,7 +79,7 @@ function detectTier(gpu) {
 // SETTINGS
 // ---------------------------------------------------------------------------
 const DEFAULTS = { name: '', room: '', bots: '9', server: '', sens: 1, tsens: 1, fov: 82, vol: 0.7, quality: 'auto', map: 'dustgrid', difficulty: 'medium', showFps: false,
-  voice: false, voiceMode: 'ptt', vvol: 0.9 };
+  voice: false, voiceMode: 'ptt', vvol: 0.9, mode: 'comp', vibrate: true, killcam: true, amb: 0.5 };
 function loadSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('blockops.settings') || '{}')); }
   catch (e) { return Object.assign({}, DEFAULTS); }
@@ -132,7 +135,10 @@ class Game {
     this.input.touchSens = this.settings.tsens;
     this.hud = new HUD(this);
     this.net = null;
-    this.nadeModels = { he: buildGun('he'), flash: buildGun('flash'), smoke: buildGun('smoke') };
+    this.nadeModels = {};
+    for (const n of S.GRENADE_ORDER) this.nadeModels[n] = buildGun(n);
+    this.blocked = new Set(JSON.parse(localStorage.getItem('blockops.blocked') || '[]'));
+    this.rosterMap = new Map();
     this.mapThumbs = {};
     this.loadWorld(S.MAPS[this.settings.map] ? this.settings.map : S.MAP_ORDER[0]);
 
@@ -152,6 +158,7 @@ class Game {
     this.voice.onStatus = (t) => this.hud.centerMsg('🎤 ' + t, 3000);
     this.talkers = new Map();
     this.friends = new Friends(this);
+    this.account = new Account(this);
     this.layout = new LayoutEditor(this);
     this.bindUI();
     this.bindInput();
@@ -159,7 +166,8 @@ class Game {
     this.friends.connect(this.lobbyUrl);
     this.pollOnline();
     setInterval(() => this.pollOnline(), 20000);
-    $('newsBody').innerHTML = '<b>v' + CONFIG.VERSION + '</b> · Yerdeki silahları al (E) / at (G)<br>👥 Arkadaş sistemi ve davetler<br>🎤 Takım sesli sohbeti (V)<br>🎮 Mobil buton düzeni düzenleyici<br>✨ Ultra grafik + otomatik cihaz algılama';
+    $('newsBody').innerHTML = '<b>v' + CONFIG.VERSION + '</b> · 🎖 Profil, seviye, rütbe<br>🛒 Silah kaplamaları (sadece görünüm)<br>🏆 Dereceli · ☠ Ölüm Maçı · 🔫 Silah Oyunu · 🔪 Bıçak · ⚔ 1v1<br>🔥 Molotof + 💥 duvar kıran C4<br>🗺 2 yeni harita + harita oylaması<br>🎥 Leş kamerası · 🎉 Parti sistemi';
+    this.applyShowcaseCosmetics();
     window.addEventListener('resize', () => this.renderer.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.renderer.resize(), 200));
     this.last = performance.now();
@@ -199,6 +207,10 @@ class Game {
     this.radarDots = []; this.radarBomb = null; this.radarCenter = [32, 32]; this.lastRadar = 0;
     this.seenEnemy = new Map();
     this.difficulty = this.settings ? this.settings.difficulty : 'medium';
+    this.mode = this.settings ? this.settings.mode : 'comp';
+    this.fires = [];
+    this.selfBuf = []; this.selfGhost = null; this.killcam = null; this.endOpen = false;
+    this.gg = 0;
     if (this.fx) { this.fx.particles = []; this.fx.decals = []; this.fx.tracers = []; }
   }
 
@@ -262,6 +274,7 @@ class Game {
     this.radarImg = WorldRenderer.topDownCanvas(this.world, map, 4, true);
     if (this.fx) { this.fx.particles = []; this.fx.decals = []; this.fx.tracers = []; }
     const rm = $('radarMap'); if (rm) rm.textContent = map.name.toUpperCase();
+    if (this.inGame) { this.sfx.setAmbienceVolume(this.settings.amb); this.sfx.ambience(map.amb || null); }
   }
 
   buildMenu() {
@@ -292,6 +305,22 @@ class Game {
       });
       cards.appendChild(card);
     }
+    const mb = $('modeBtns');
+    mb.innerHTML = '';
+    if (!S.MODES[this.settings.mode]) this.settings.mode = 'comp';
+    for (const id of S.MODE_ORDER) {
+      const m = S.MODES[id];
+      const b = document.createElement('button');
+      b.className = 'mode-btn' + (id === this.settings.mode ? ' on' : '') + (m.ranked ? ' ranked' : '');
+      b.innerHTML = `<span class="mi">${m.icon}</span><b>${m.label}</b><small>${m.perTeam === 1 ? '1v1' : m.perTeam + 'v' + m.perTeam}</small>`;
+      b.addEventListener('click', () => {
+        this.settings.mode = id; saveSettings(this.settings);
+        mb.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        this.showModeDesc();
+      });
+      mb.appendChild(b);
+    }
+    this.showModeDesc();
     const db = $('diffBtns');
     db.innerHTML = '';
     for (const id of ['easy', 'medium', 'hard']) {
@@ -311,7 +340,77 @@ class Game {
       document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === t));
       document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('on', p.dataset.pane === t.dataset.tab));
     }));
-    $('verText').textContent = 'v' + CONFIG.VERSION + ' · ' + S.MAP_ORDER.length + ' harita · ' + Object.keys(WEAPONS).length + ' silah/bomba';
+    $('verText').textContent = 'v' + CONFIG.VERSION + ' · ' + S.MAP_ORDER.length + ' harita · ' + S.MODE_ORDER.length + ' mod · ' + Object.keys(WEAPONS).length + ' silah/bomba';
+  }
+  showModeDesc() {
+    const m = S.MODES[this.settings.mode] || S.MODES.comp;
+    $('modeDesc').textContent = m.desc + (m.ranked ? ' · Botlar her zaman ZOR seviyede.' : '');
+  }
+
+  // ---------------------------------------------------------------- cosmetics
+  skinOfPlayer(id, w) {
+    if (id === this.myId) return this.account.equippedFor(w);
+    const r = this.rosterMap.get(id);
+    const sk = r && r.sk;
+    return (sk && (sk[w] || sk['*'])) || '';
+  }
+  accentOfPlayer(id) {
+    const r = this.rosterMap.get(id);
+    const a = r && r.sk && r.sk.agent;
+    return a && COS.AGENTS[a] ? COS.AGENTS[a].color : null;
+  }
+  applyShowcaseCosmetics() {
+    const acc = this.account.agentColor();
+    this.showcase = [new Avatar('T', acc), new Avatar('CT', acc)];
+    this.showcase[0].setWeapon('krait', this.account.equippedFor('krait'));
+    this.showcase[1].setWeapon('sentinel', this.account.equippedFor('sentinel'));
+  }
+  onCosmeticsChanged() {
+    if (this.showcase) this.applyShowcaseCosmetics();
+    if (this.inGame && this.vm.weaponId && this.alive) this.vm.setWeapon(this.vm.weaponId, true, this.account.equippedFor(this.vm.weaponId));
+    this.selfGhost = null;
+  }
+
+  // ---------------------------------------------------------------- blocking / reporting
+  blockKey(id) { const r = this.rosterMap.get(id); return r ? (r.ac ? 'a:' + r.ac : 'n:' + r.n) : null; }
+  isBlockedId(id) { const k = this.blockKey(id); return !!(k && this.blocked.has(k)); }
+  isBlockedName(name) {
+    if (this.blocked.has('n:' + name)) return true;
+    for (const r of this.rosterMap.values()) if (r.n === name && r.ac && this.blocked.has('a:' + r.ac)) return true;
+    return false;
+  }
+  toggleBlock(id) {
+    const k = this.blockKey(id);
+    if (!k) return;
+    if (this.blocked.has(k)) this.blocked.delete(k); else this.blocked.add(k);
+    localStorage.setItem('blockops.blocked', JSON.stringify([...this.blocked]));
+    $('blockedCount').textContent = this.blocked.size;
+    this.voice.refreshMutes();
+    this.renderPausePlayers();
+  }
+  report(id) {
+    const reasons = ['Hile şüphesi', 'Küfür / hakaret', 'Takım arkadaşına zarar', 'Uygunsuz isim', 'Oyunu sabote etme'];
+    const pick = prompt('Bildirme sebebi (numara yaz):\n' + reasons.map((r, i) => `${i + 1}) ${r}`).join('\n'), '1');
+    const i = parseInt(pick, 10) - 1;
+    if (!(i >= 0 && i < reasons.length) || !this.net) return;
+    this.net.emit('report', { id, reason: reasons[i] });
+  }
+  renderPausePlayers() {
+    const box = $('pausePlayers');
+    if (!box) return;
+    const list = [...this.rosterMap.values()].filter((p) => !p.bt && p.i !== this.myId);
+    if (!list.length) { box.innerHTML = '<div class="muted">Odada başka gerçek oyuncu yok.</div>'; return; }
+    const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    box.innerHTML = list.map((p) => {
+      const bl = this.isBlockedId(p.i);
+      return `<div class="friend"><div><b>${esc(p.n)}</b>${p.lv ? `<small>Sv. ${p.lv}</small>` : ''}<br><span class="${p.t === 'T' ? 'game' : 'on'}">${p.t}</span></div>` +
+        `<div class="fa"><button data-block="${esc(p.i)}">${bl ? '🔊 ENGELİ KALDIR' : '🔇 ENGELLE'}</button><button data-report="${esc(p.i)}" class="del">⚑ BİLDİR</button></div></div>`;
+    }).join('');
+    box.querySelectorAll('[data-block]').forEach((b) => b.addEventListener('click', () => this.toggleBlock(b.dataset.block)));
+    box.querySelectorAll('[data-report]').forEach((b) => b.addEventListener('click', () => this.report(b.dataset.report)));
+  }
+  vibrate(pattern) {
+    if (isTouch && this.settings.vibrate && navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) { /* ignore */ } }
   }
 
   // -------------------------------------------------------------------------
@@ -349,7 +448,15 @@ class Game {
     $('inVoiceMode').value = s.voiceMode;
     $('inVoiceMode').addEventListener('change', () => { s.voiceMode = $('inVoiceMode').value; saveSettings(s); this.voice.setOpenMic(s.voiceMode === 'open'); });
     this.voice.openMic = s.voiceMode === 'open';
-    $('inName').addEventListener('change', () => { s.name = $('inName').value.trim().slice(0, 16); saveSettings(s); this.friends.rename(); });
+    $('inName').addEventListener('change', () => { s.name = $('inName').value.trim().slice(0, 16); saveSettings(s); this.friends.rename(); this.account.auth(); });
+    bindRange('inAmb', 'ambVal', 'amb', (v) => Math.round(v * 100) + '%', (v) => this.sfx.setAmbienceVolume(v));
+    $('inVibrate').checked = !!s.vibrate;
+    $('inVibrate').addEventListener('change', () => { s.vibrate = $('inVibrate').checked; saveSettings(s); if (s.vibrate) this.vibrate(40); });
+    $('inKillcam').checked = !!s.killcam;
+    $('inKillcam').addEventListener('change', () => { s.killcam = $('inKillcam').checked; saveSettings(s); });
+    $('blockedCount').textContent = this.blocked.size;
+    $('btnClearBlocks').addEventListener('click', () => { this.blocked.clear(); localStorage.setItem('blockops.blocked', '[]'); $('blockedCount').textContent = 0; this.voice.refreshMutes(); });
+    $('weaponBox').addEventListener('click', () => { if (this.inGame && this.alive) this.vm.inspect(); });
     $('inShowFps').checked = !!s.showFps;
     this.showStats = !!s.showFps; $('stats').classList.toggle('hidden', !this.showStats);
     $('inShowFps').addEventListener('change', () => { s.showFps = $('inShowFps').checked; saveSettings(s); this.showStats = s.showFps; $('stats').classList.toggle('hidden', !this.showStats); });
@@ -404,6 +511,7 @@ class Game {
     I.on('usePress', () => { if (this.inGame && this.alive && this.nearDrop) this.net.emit('pickup', this.nearDrop.id); });
     I.on('ptt', (on) => { if (this.inGame && this.voice.active && this.settings.voiceMode !== 'open') { this.voice.setTalking(on); this.renderVoice(); } });
     I.on('nextSpec', () => this.nextSpectate());
+    I.on('inspect', () => { if (this.inGame && this.alive) this.vm.inspect(); });
     I.on('escape', () => {
       if (!this.inGame) return;
       if (this.hud.buyOpen) { this.toggleBuy(false); return; }
@@ -412,7 +520,7 @@ class Game {
     });
     I.on('lockchange', (locked) => {
       if (!this.inGame || isTouch) return;
-      if (!locked && !this.hud.buyOpen && !this.chatOpen) this.setPaused(true);
+      if (!locked && !this.hud.buyOpen && !this.chatOpen && !this.endOpen) this.setPaused(true);
       if (locked) this.setPaused(false, true);
     });
     this.canvas.addEventListener('mousedown', (e) => {
@@ -424,6 +532,7 @@ class Game {
     this.paused = p;
     $('pause').classList.toggle('hidden', !p);
     $('pauseRoom').textContent = 'Oda kodu: ' + this.roomId;
+    if (p) this.renderPausePlayers();
     this.updateInputEnabled();
     if (!p && !fromLock && !isTouch) this.input.requestLock();
   }
@@ -478,7 +587,8 @@ class Game {
       await this.net.connect(url);
       this.bindNet();
       $('loadingText').textContent = 'Odaya katılınıyor...';
-      const res = await this.net.join({ name: s.name, room: roomCode, bots: parseInt(s.bots, 10) || 0, map: s.map, difficulty: s.difficulty, code: this.friends.code });
+      const res = await this.net.join({ name: s.name, room: roomCode, bots: parseInt(s.bots, 10) || 0, map: s.map, difficulty: s.difficulty, mode: s.mode,
+        code: this.friends.code, token: this.friends.token });
       this.onJoined(res);
     } catch (err) {
       $('menuErr').textContent = err.message || String(err);
@@ -493,7 +603,9 @@ class Game {
     this.resetState();
     this.myId = res.id; this.myNum = res.num; this.roomId = res.room;
     this.difficulty = res.difficulty || 'medium';
+    this.mode = res.mode || 'comp';
     this.loadWorld(res.map);
+    this.rosterMap = new Map((res.roster || []).map((p) => [p.i, p]));
     for (const [x, y, z, t] of res.blocks) this.world.set(x, y, z, t);
     this.worldR.markAll();
     this.hud.setRoster(res.roster || []);
@@ -503,7 +615,9 @@ class Game {
     this.hud.show(true);
     this.updateInputEnabled();
     if (!isTouch) this.input.requestLock();
-    this.hud.centerMsg(`${S.getMap(this.mapId).name} · ${(S.DIFFICULTY[this.difficulty] || {}).label} · Oda kodu: ${this.roomId} — arkadaşlarını davet et!`, 7000);
+    const md = S.MODES[this.mode] || S.MODES.comp;
+    this.hud.centerMsg(`${md.icon} ${md.label} · ${S.getMap(this.mapId).name} · ${(S.DIFFICULTY[this.difficulty] || {}).label} · Oda kodu: ${this.roomId} — arkadaşlarını davet et!`, 7000);
+    if (!res.account && this.account.online === false) this.hud.centerMsg('Hesap sunucusuna bağlanılamadı — bu maçın ilerlemesi kaydedilmeyecek', 5000);
     if (isTouch && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
     this.friends.render();
   }
@@ -524,15 +638,17 @@ class Game {
     for (const el of this.tagEls.values()) el.remove();
     this.tagEls.clear();
     this.hud.endScreen(null, false);
+    this.sfx.ambience(null);
     this.loadWorld(S.MAPS[this.settings.map] ? this.settings.map : S.MAP_ORDER[0]);
     this.updateInputEnabled();
+    this.account.loadHistory();
   }
 
   bindNet() {
     const n = this.net;
     n.on('snap', (m) => this.onSnap(m));
     n.on('shot', (m) => this.onRemoteShot(m));
-    n.on('hitc', (m) => { this.hud.hitmarker(m.hs); this.sfx.hit(m.hs); if (m.k) this.sfx.kill(); });
+    n.on('hitc', (m) => { this.hud.hitmarker(m.hs); this.sfx.hit(m.hs); if (m.k) { this.sfx.kill(); this.vibrate([18, 40, 18]); } });
     n.on('dmg', (m) => {
       let ang = null;
       if (m.f) {
@@ -541,15 +657,11 @@ class Game {
       }
       this.hud.damage(ang);
       this.sfx.hurt();
+      this.vibrate(Math.min(90, 20 + m.d));
       this.punch[1] -= Math.min(4, m.d * 0.06) * S.DEG;
       this.punch[0] += (Math.random() - 0.5) * 2 * S.DEG;
     });
-    n.on('kill', (k) => {
-      this.hud.killfeed(k, this.myId);
-      if (k.v === this.myId) { this.deathTime = performance.now(); this.deathPos = [this.me.x, this.me.y, this.me.z]; this.killerId = k.k; this.scoped = 0; }
-      const r = this.remotes.get(k.v);
-      if (r) r.deadAt = performance.now();
-    });
+    n.on('kill', (k) => this.onKill(k));
     n.on('blocks', (list) => {
       for (const [x, y, z, t, old] of list) {
         this.world.set(x, y, z, t);
@@ -566,6 +678,7 @@ class Game {
     n.on('throw', (m) => {
       const r = this.remotes.get(m.i);
       if (r && r.state) { r.avatar.recoil = 1.5; this.sfx.throwNade([r.state.x, r.state.y + 1.5, r.state.z]); }
+      if (m.ty === 'breach') setTimeout(() => { const v = [...this.nadesView.values()].find((x) => x.ty === 'breach'); const b = v && v.buf[v.buf.length - 1]; this.sfx.c4Stick(b ? [b.x, b.y, b.z] : null); }, 400);
     });
     n.on('nadeb', (m) => this.sfx.nadeBounce([m.x, m.y, m.z]));
     n.on('nade', (m) => {
@@ -573,6 +686,9 @@ class Game {
       if (m.e === 'he') { this.fx.heBlast(m.x, m.y, m.z); this.sfx.heBlast(pos); }
       else if (m.e === 'flash') { this.fx.flashBurst(m.x, m.y, m.z); this.sfx.flashBang(pos, 0); }
       else if (m.e === 'smoke') this.sfx.smokeHiss(pos);
+      else if (m.e === 'molotov') { this.fx.molotovBurst(m.x, m.y, m.z); this.sfx.molotovBurst(pos); }
+      else if (m.e === 'fireout') { this.fx.fireOut(m.x, m.y, m.z); this.sfx.fireOut(pos); }
+      else if (m.e === 'breach') { this.fx.breachBlast(m.x, m.y, m.z); this.sfx.breachBlast(pos); this.vibrate(60); }
       this.nadesView.delete(m.id);
     });
     n.on('flashed', (m) => {
@@ -581,24 +697,44 @@ class Game {
       this.sfx.flashBang(null, Math.min(3, m.d / 1000));
     });
     n.on('rstart', (m) => {
-      this.hud.big('RAUNT ' + m.rd, 'Hazırlık süresi — [B] ile market', '', 2600);
+      const md = S.MODES[m.mode || this.mode] || S.MODES.comp;
+      this.killcam = null;
+      if (md.respawn) this.hud.big(md.icon + ' ' + md.label, md.freeBuy ? '[B] ile istediğin silahı bedava al' : 'Her leş = yeni silah · son silah bıçak', '', 3200);
+      else if (md.loadout === 'duel' && m.set) this.hud.big('RAUNT ' + m.rd, 'Silahlar: ' + m.set.filter(Boolean).map((w) => WEAPONS[w].name).join(' + '), '', 2600);
+      else if (md.loadout === 'knife') this.hud.big('RAUNT ' + m.rd, '🔪 Sadece bıçak!', '', 2600);
+      else this.hud.big('RAUNT ' + m.rd, 'Hazırlık süresi — [B] ile market', '', 2600);
       this.sfx.roundStart();
       if (m.carrier === this.myId) this.hud.centerMsg('💣 Bomba sende! Bir bölgeye (A/B) git ve E tuşuna basılı tut.', 6000);
       this.unacked = []; this.recoilIdx = 0;
       this.reloadUntil = 0; this.vm.cancelReload(); this.scoped = 0;
     });
     n.on('live', () => { this.hud.centerMsg('GİT GİT GİT!', 1500); if (this.hud.buyOpen && !(this.you && this.you.cb)) this.toggleBuy(false); });
-    n.on('rend', (m) => { this.hud.roundEnd(m, this.myTeam); this.sfx.roundEnd(m.w === this.myTeam); });
+    n.on('rend', (m) => { this.hud.roundEnd(m, this.myTeam); this.sfx.roundEnd(m.w === this.myTeam); if (m.hl) this.hud.highlight(m.hl); });
     n.on('half', () => this.hud.big('DEVRE ARASI', 'Takımlar taraf değiştiriyor', '', 4000));
     n.on('over', (m) => {
+      this.killcam = null;
+      this.endOpen = true;
+      this.input.releaseLock();
       this.hud.endScreen(m, true);
       this.sfx.roundEnd(m.w === this.myTeam);
-      setTimeout(() => this.hud.endScreen(null, false), (CONFIG.ROUND.GAMEOVER - 0.5) * 1000);
+      this.vibrate(m.w === this.myTeam ? [40, 60, 40, 60, 120] : 200);
+      clearTimeout(this._endT);
+      this._endT = setTimeout(() => {
+        this.hud.endScreen(null, false); this.endOpen = false;
+        if (this.inGame && !isTouch && !this.paused) this.hud.centerMsg('Devam etmek için ekrana tıkla', 3000);
+      }, (CONFIG.ROUND.GAMEOVER - 0.5) * 1000);
+    });
+    n.on('votes', (t) => this.hud.voteTally(t));
+    n.on('progress', (res) => this.account.onProgress(res));
+    n.on('ggup', (m) => {
+      this.sfx.levelUp();
+      const last = m.w === 'knife';
+      this.hud.big(last ? 'SON SİLAH: BIÇAK' : `SİLAH ${m.lv + 1}/${m.of}`, WEAPONS[m.w].name, '', 1800);
     });
     n.on('bomb', (m) => this.onBombEvent(m));
     n.on('buyr', (r) => { this.hud.buyResult(r); this.sfx.ui(r.ok); });
     n.on('msg', (m) => this.hud.centerMsg(m.text, 4000));
-    n.on('chat', (m) => { this.hud.chat(m); this.sfx.ui(true); });
+    n.on('chat', (m) => { if (this.isBlockedName(m.n)) return; this.hud.chat(m); this.sfx.ui(true); });
     n.on('rtc', (m) => this.voice.onSignal(m));
     n.on('talk', (m) => { if (m.on) this.talkers.set(m.i, m.n); else this.talkers.delete(m.i); this.renderVoice(); });
     n.on('picked', (m) => { this.sfx.draw(); this.hud.centerMsg('Alındı: ' + (WEAPONS[m.w] ? WEAPONS[m.w].name : m.w), 1500); });
@@ -610,10 +746,50 @@ class Game {
     });
   }
 
+  onKill(k) {
+    this.hud.killfeed(k, this.myId);
+    const now = performance.now();
+    // ragdoll direction (away from the killer) + helmet pop on helmeted headshots
+    const victimPos = k.v === this.myId ? [this.me.x, this.me.y, this.me.z] : (this.remotes.get(k.v) && this.remotes.get(k.v).state ? [this.remotes.get(k.v).state.x, this.remotes.get(k.v).state.y, this.remotes.get(k.v).state.z] : null);
+    let dir = null;
+    if (victimPos && k.kx !== null && k.kx !== undefined && k.k !== k.v) {
+      const dx = victimPos[0] - k.kx, dz = victimPos[2] - k.kz, l = Math.hypot(dx, dz) || 1;
+      dir = [dx / l, dz / l];
+    }
+    const r = this.remotes.get(k.v);
+    if (r) {
+      r.deadAt = now;
+      r.deathInfo = { dir: dir || [Math.random() - 0.5, Math.random() - 0.5], hs: !!k.hs, hm: !!k.hm };
+    }
+    if (k.hm && victimPos) {
+      const col = k.vt === 'CT' ? [0.24, 0.29, 0.23] : [0.2, 0.2, 0.2];
+      this.fx.helmetPop([victimPos[0], victimPos[1] + 1.75, victimPos[2]], dir ? [dir[0], 0, dir[1]] : [0, 0, 1], col);
+    }
+    if (k.v === this.myId) {
+      this.deathTime = now; this.deathPos = [this.me.x, this.me.y, this.me.z]; this.killerId = k.k; this.scoped = 0;
+      this.vm.cancelInspect();
+      this.vibrate(220);
+      const md = S.MODES[this.mode] || S.MODES.comp;
+      if (this.settings.killcam && k.k && k.k !== this.myId && this.remotes.has(k.k) && !md.respawn && this.phase !== 'gameover') {
+        this.killcam = { killer: k.k, name: k.kn, team: k.kt, w: k.w, hs: k.hs, kh: k.kh, start: now, deathT: this.net.serverNow() };
+      }
+    } else if (k.k === this.myId && k.v !== this.myId) this.vibrate(25);
+  }
+
+  /** server time to show during the killcam (null when not replaying) */
+  killcamTime(now) {
+    const kc = this.killcam;
+    if (!kc || this.alive) { this.killcam = null; return null; }
+    const e = now - kc.start;
+    if (e < KILLCAM_FALL) return null;
+    if (e > KILLCAM_FALL + KILLCAM_LEN) { this.killcam = null; $('killcamBar').classList.add('hidden'); return null; }
+    return kc.deathT - KILLCAM_BEFORE + (e - KILLCAM_FALL);
+  }
+
   onBombEvent(m) {
     const pos = m.x !== undefined ? [m.x, m.y + 0.3, m.z] : null;
     switch (m.e) {
-      case 'planted': this.hud.big('BOMBA KURULDU', `${m.site} bölgesi · ${m.by}`, 'T', 3000); this.sfx.beep(pos, true); break;
+      case 'planted': this.hud.big('BOMBA KURULDU', `${m.site} bölgesi · ${m.by}`, 'T', 3000); this.sfx.beep(pos, true); this.vibrate(80); break;
       case 'defused': this.hud.big('BOMBA İMHA EDİLDİ', m.by, 'CT', 3000); break;
       case 'exploded': this.fx.explosion(m.x, m.y, m.z); this.sfx.explosion(pos); break;
       case 'dropped': if (this.myTeam === 'T') this.hud.centerMsg(`💣 ${m.by} bombayı düşürdü!`, 3000); break;
@@ -645,8 +821,9 @@ class Game {
     }
     for (const id of [...this.nadesView.keys()]) if (!liveIds.has(id)) this.nadesView.delete(id);
     this.smokes = m.sm ? m.sm.map(([id, x, y, z, t0]) => ({ id, x, y, z, t0 })) : [];
+    this.fires = m.f ? m.f.map(([id, x, y, z, t0]) => ({ id, x, y, z, t0 })) : [];
     this.phase = m.ph; this.phaseEnd = m.pe; this.round = m.rd; this.score = m.sc; this.bombState = m.b;
-    if (m.r) this.hud.setRoster(m.r);
+    if (m.r) { this.hud.setRoster(m.r); this.rosterMap = new Map(m.r.map((p) => [p.i, p])); }
     const y = m.y;
     const prevTeam = this.myTeam;
     this.you = y;
@@ -656,7 +833,8 @@ class Game {
       this.talkers.clear(); this.renderVoice();
       if (this.settings.voice && (y.tm === 'T' || y.tm === 'CT')) { if (this.voice.active) this.voice.restart(); else this.voice.start(); }
     }
-    this.drops = m.d ? m.d.map(([id, wid, x, yy, z, yaw]) => ({ id, wid, x, y: yy, z, yaw })) : [];
+    this.drops = m.d ? m.d.map(([id, wid, x, yy, z, yaw, sk]) => ({ id, wid, x, y: yy, z, yaw, sk: sk || '' })) : [];
+    this.gg = y.gg || 0;
     const wasAlive = this.alive;
     this.alive = y.a === 1;
 
@@ -669,7 +847,9 @@ class Game {
     const ws = y.wp[this.slot];
     if (!ws) { this.slot = y.sl; }
     const curId = this.curWeaponId();
-    if (this.vm.weaponId !== curId) { this.vm.setWeapon(curId); this.drawUntil = now + y.dr; this.scoped = 0; }
+    const mySkin = this.account.equippedFor(curId);
+    if (this.vm.weaponId !== curId) { this.vm.setWeapon(curId, false, mySkin); this.drawUntil = now + y.dr; this.scoped = 0; }
+    else if (this.alive && this.vm.skin !== mySkin) this.vm.setWeapon(curId, true, mySkin);
     this.unacked = this.unacked.filter((u) => u.seq > y.ss && now - u.t < 500);
     if (y.rl > 0 && !(this.reloadUntil > now)) {
       const w = WEAPONS[curId];
@@ -711,13 +891,21 @@ class Game {
       const p = { i: a[0], x: a[1], y: a[2], z: a[3], yw: a[4], pt: a[5], vx: a[6], vz: a[7],
         c: f & 1, a: (f >> 1) & 1, g: (f >> 2) & 1, rl: (f >> 3) & 1, pl: (f >> 4) & 1, df: (f >> 5) & 1,
         t: a[9] ? 'CT' : 'T', w: a[10], h: a[11] };
-      if (p.i === this.myId) { this.myPub = p; continue; }
+      const entry = { t: m.t, x: p.x, y: p.y, z: p.z, yw: p.yw, pt: p.pt, c: p.c, a: p.a, g: p.g, vx: p.vx, vz: p.vz, w: p.w, rl: p.rl, pl: p.pl || p.df };
+      if (p.i === this.myId) {
+        this.myPub = p;
+        this.selfBuf.push(entry);     // own history for the killcam replay
+        while (this.selfBuf.length > 2 && this.selfBuf[1].t < m.t - 4500) this.selfBuf.shift();
+        continue;
+      }
       seen.add(p.i);
       let r = this.remotes.get(p.i);
-      if (!r) { r = { buf: [], avatar: new Avatar(p.t), team: p.t, stepT: 0, deadAt: 0 }; this.remotes.set(p.i, r); }
-      if (r.team !== p.t) { r.avatar = new Avatar(p.t); r.team = p.t; }
-      r.buf.push({ t: m.t, x: p.x, y: p.y, z: p.z, yw: p.yw, pt: p.pt, c: p.c, a: p.a, g: p.g, vx: p.vx, vz: p.vz, w: p.w, rl: p.rl, pl: p.pl || p.df });
-      while (r.buf.length > 2 && r.buf[1].t < m.t - 1000) r.buf.shift();
+      const acc = this.accentOfPlayer(p.i);
+      if (!r) { r = { buf: [], avatar: new Avatar(p.t, acc), team: p.t, accent: acc, stepT: 0, deadAt: 0 }; this.remotes.set(p.i, r); }
+      if (r.team !== p.t || r.accent !== acc) { r.avatar = new Avatar(p.t, acc); r.team = p.t; r.accent = acc; }
+      r.buf.push(entry);
+      if (entry.a && r.buf.length > 1 && !r.buf[r.buf.length - 2].a) r.deathInfo = null;   // respawned
+      while (r.buf.length > 2 && r.buf[1].t < m.t - 4500) r.buf.shift();   // 4.5 s kept for the killcam
     }
     for (const id of [...this.remotes.keys()]) if (!seen.has(id)) this.remotes.delete(id);
   }
@@ -749,7 +937,7 @@ class Game {
     this.slot = slot;
     this.lastSwitchLocal = performance.now();
     const id = this.you.wp[slot][0];
-    this.vm.setWeapon(id);
+    this.vm.setWeapon(id, false, this.account.equippedFor(id));
     this.drawUntil = performance.now() + WEAPONS[id].drawTime * 1000;
     this.reloadUntil = 0;
     this.scoped = 0;
@@ -912,6 +1100,7 @@ class Game {
     return list;
   }
   nextSpectate() {
+    if (this.killcam) { this.killcam = null; $('killcamBar').classList.add('hidden'); return; }
     const list = this.spectateCandidates();
     if (!list.length) { this.specTarget = null; return; }
     this.specIdx = (this.specIdx + 1) % list.length;
@@ -1021,8 +1210,15 @@ class Game {
     // --- remote interpolation
     const serverNow = this.net.serverNow();
     const renderT = serverNow - this.interpDelay;
-    this.renderT = renderT;
-    for (const [id, r] of this.remotes) this.updateRemote(r, renderT, dt, id);
+    const kcT = this.killcamTime(now);
+    this.renderT = kcT !== null ? kcT : renderT;
+    for (const [id, r] of this.remotes) this.updateRemote(r, this.renderT, dt, id);
+    if (kcT !== null) {
+      // replay my own last seconds as a ghost avatar so I can see how I died
+      if (!this.selfGhost || this.selfGhost.team !== this.myTeam) this.selfGhost = { buf: this.selfBuf, avatar: new Avatar(this.myTeam === 'CT' ? 'CT' : 'T', this.account.agentColor()), team: this.myTeam, stepT: 0 };
+      this.selfGhost.buf = this.selfBuf;
+      this.updateRemote(this.selfGhost, kcT, dt, this.myId);
+    }
 
     // --- camera
     const eyeTarget = this.me.crouch ? CONFIG.PLAYER.CROUCH_EYE : CONFIG.PLAYER.EYE;
@@ -1038,7 +1234,22 @@ class Game {
       this.specTarget = null;
     } else {
       const sinceDeath = now - this.deathTime;
-      if (this.deathPos && sinceDeath < 2200 && this.myTeam !== 'SPEC') {
+      const kr = kcT !== null && this.killcam && this.remotes.get(this.killcam.killer);
+      if (kr && kr.state) {
+        // KILLCAM: the killer's point of view, replayed from the interpolation history
+        const s = kr.state;
+        this.camPos = [s.x, s.y + (s.crouch ? CONFIG.PLAYER.CROUCH_EYE : CONFIG.PLAYER.EYE), s.z];
+        this.camYaw = s.yaw; this.camPitch = s.pitch; this.camRoll = 0;
+        const kw = s.w || this.killcam.w;
+        if (WEAPONS[kw] && this.vm.weaponId !== kw) this.vm.setWeapon(kw, true, this.skinOfPlayer(this.killcam.killer, kw));
+        const kc = this.killcam;
+        const wName = WEAPONS[kc.w] ? WEAPONS[kc.w].name : kc.w;
+        const left = Math.max(0, (KILLCAM_FALL + KILLCAM_LEN - (now - kc.start)) / 1000);
+        const html = `<b>🎥 LEŞ KAMERASI</b> <span class="${kc.team}">${(kc.name || '').replace(/[<>&]/g, '')}</span> seni <b>${wName}</b> ile öldürdü${kc.hs ? ' · <b>KAFADAN</b>' : ''} · kalan canı: <b>${kc.kh}</b> <small>${left.toFixed(1)} sn · ${isTouch ? 'dokun' : 'tıkla'}: geç</small>`;
+        if (this._kcHtml !== html) { this._kcHtml = html; $('killcamBar').innerHTML = html; }
+        $('killcamBar').classList.remove('hidden');
+        spec = null;
+      } else if (this.deathPos && sinceDeath < (this.killcam ? KILLCAM_FALL : 2200) && this.myTeam !== 'SPEC') {
         const f = Math.min(1, sinceDeath / 600);
         this.camPos = [this.deathPos[0], this.deathPos[1] + CONFIG.PLAYER.EYE - f * 1.2, this.deathPos[2]];
         const killer = this.killerId && this.remotes.get(this.killerId);
@@ -1061,7 +1272,8 @@ class Game {
           this.camYaw = s.yaw; this.camPitch = s.pitch; this.camRoll = 0;
           const name = (this.hud.roster.find((p) => p.i === this.specTarget) || {}).n || '';
           spec = `İZLENİYOR: ${name} · ${isTouch ? 'ekrana dokun' : 'Sol tık / N'} = sonraki`;
-          if (this.vm.weaponId !== s.w) this.vm.setWeapon(s.w, true);
+          const ssk = this.skinOfPlayer(this.specTarget, s.w);
+          if (this.vm.weaponId !== s.w || this.vm.skin !== ssk) this.vm.setWeapon(s.w, true, ssk);
         } else {
           // free overview camera
           this.camPos = [32, 20, 4];
@@ -1071,6 +1283,7 @@ class Game {
       }
       if (this.phase === 'warmup' && this.myTeam !== 'SPEC') spec = (spec || '') + ' · Isınmada yeniden doğacaksın';
     }
+    if (kcT === null && !$('killcamBar').classList.contains('hidden')) $('killcamBar').classList.add('hidden');
     this.fov = this.alive ? fov : 78;
     this.worldR.focus = this.camPos;
     this.worldR.update(16, this.perf.chunkBudgetMs);
@@ -1143,7 +1356,7 @@ class Game {
       spreadPx: Math.min(60, (spreadDeg + recoilSpread) * pxPerDeg), scoped: this.alive && this.scoped > 0,
       showCrosshair: this.alive, bomb: b, myTeam: this.myTeam,
       iCarryBomb: !!(b && b.s === 'carried' && b.c === this.myId), aliveT, aliveCT, totalT, totalCT, progress, flash,
-      spec: this.alive ? null : spec
+      spec: this.alive ? null : spec, mode: this.mode, gg: this.gg, protect: !!(this.you && this.you.pr)
     });
     if (this.fps && this.fps < 25 && this.phase !== 'gameover') {
       this.lowFpsTime = (this.lowFpsTime || 0) + dt;
@@ -1248,7 +1461,10 @@ class Game {
       time: performance.now() / 1000, w: b.w
     };
     r.state = st;
-    r.avatar.setWeapon(st.w);
+    if (!st.alive && r.deathInfo && !r.avatar.deathDir) {
+      r.avatar.deathDir = r.deathInfo.dir; r.avatar.deathHs = r.deathInfo.hs; r.avatar.helmetPopped = r.deathInfo.hm;
+    }
+    r.avatar.setWeapon(st.w, this.skinOfPlayer(id, st.w));
     r.avatar.update(dt, st);
     // footsteps for running enemies/teammates
     if (st.alive && st.onGround && st.speed > CONFIG.MOVE.RUN_SPEED * 0.6) {
@@ -1302,8 +1518,9 @@ class Game {
     if (!this.inGame) for (const av of this.showcase) { av.root.render(O); A.pushAABB(av.root.pos[0], 1.015, av.root.pos[2], 0.9, 0.02, 0.9, 0, 0, 0, 0.35, 0); }
     // weapons on the ground
     for (const d of this.drops) {
-      let m = this.gunModels[d.wid];
-      if (!m) m = this.gunModels[d.wid] = buildGun(d.wid);
+      const gk = d.wid + ':' + d.sk;
+      let m = this.gunModels[gk];
+      if (!m) m = this.gunModels[gk] = buildGun(d.wid, d.sk);
       m.root.pos = [d.x, d.y + 0.05, d.z];
       m.root.rot = [0, d.yaw, Math.PI / 2];
       m.root.scl = [1.15, 1.15, 1.15];
@@ -1313,9 +1530,11 @@ class Game {
       if (this.nearDrop === d) A.pushAABB(d.x, d.y + 0.1, d.z, 0.5, 0.25, 0.9, 1, 0.85, 0.4, 0.18, 1);
     }
     const visible = (x, y, z, rad) => { for (const pl of planes) if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -rad) return false; return true; };
+    const kcKiller = this.killcam && this.renderT !== null && performance.now() - this.killcam.start > KILLCAM_FALL ? this.killcam.killer : null;
+    if (kcKiller && this.selfGhost && this.selfGhost.state) this.selfGhost.avatar.root.render(O);
     for (const [id, r] of this.remotes) {
       if (!r.state) continue;
-      if (!this.alive && id === this.specTarget) continue;
+      if (!this.alive && (id === this.specTarget || id === kcKiller)) continue;
       if (!r.state.alive && r.deadAt && performance.now() - r.deadAt > 8000) continue;
       if (!visible(r.state.x, r.state.y + 1, r.state.z, 1.4)) continue;
       r.avatar.root.render(O);
@@ -1341,6 +1560,10 @@ class Game {
     }
     this.fx.render(O, A, D);
     if (this.smokes.length && this.net) this.fx.renderSmokes(A, this.smokes, this.net.serverNow());
+    if (this.fires.length && this.net) {
+      this.fx.renderFires(D, this.fires, this.net.serverNow(), dt);
+      if (Math.random() < dt * 5) { const f = this.fires[Math.floor(Math.random() * this.fires.length)]; this.sfx.fireCrackle([f.x, f.y + 0.3, f.z]); }
+    }
 
     R.useBoxes(this.vp, pos);
     R.setBlend('none'); O.draw(R);
@@ -1349,7 +1572,7 @@ class Game {
     R.setBlend('none');
 
     // ---- view model (separate depth range)
-    const showVm = this.inGame && (this.alive || (this.specTarget && this.remotes.get(this.specTarget)));
+    const showVm = this.inGame && (this.alive || !!kcKiller || (this.specTarget && this.remotes.get(this.specTarget)));
     if (showVm) this.vm.render(R, this.vmBatch, this.vmAdd, this.view, 56);
 
     const tnow = performance.now();

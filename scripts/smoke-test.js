@@ -9,16 +9,30 @@
  *  6. Grenades (HE damage + voxel destruction, flash blinding, smoke blocks bot vision), shotgun pellets
  *  7. Difficulty presets change bot damage
  *  8. Full bot-vs-bot match on EVERY map completes with halftime
+ *  9. v3: molotov fire + smoke extinguish, C4 breach holes walls (never the border),
+ *     accounts/store (rewards, purchases, cheating attempts), game modes, map vote
  * Run: node scripts/smoke-test.js
  */
 const assert = require('assert');
 const S = require('../shared/shared.js');
 const Room = require('../server/Room.js');
+const { Store } = require('../server/store.js');
+const C = require('../shared/cosmetics.js');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
 
 let passed = 0;
+const pending = [];
 function test(name, fn) {
-  try { fn(); passed++; console.log('  ✓', name); }
-  catch (e) { console.error('  ✗', name, '\n   ', e.message); process.exitCode = 1; }
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(() => { passed++; console.log('  ✓', name); }, (e) => { console.error('  ✗', name, '\n   ', e.message); process.exitCode = 1; }));
+      return;
+    }
+    passed++; console.log('  ✓', name);
+  } catch (e) { console.error('  ✗', name, '\n   ', e.message); process.exitCode = 1; }
 }
 function fakeSocket(id) {
   const s = { id, events: [], join() {}, leave() {}, emit(ev, d) { s.events.push([ev, d]); } };
@@ -283,6 +297,178 @@ test('buying a weapon into an occupied slot drops the old one', () => {
   assert.ok(r.drops.some((d) => d.wid === 'viper'));
 });
 
+
+// ------------------------------------------------------------------ v3.0
+test('molotov burns players standing in it; smoke puts the fire out', () => {
+  const r = makeRoom(); r.phase = 'live';
+  const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V');
+  r.assignTeam(a, 'T'); r.assignTeam(v, 'CT'); a.alive = v.alive = true; a.hp = v.hp = 100;
+  place(a, 32.5, 1, 6); place(v, 32.5, 1, 18);
+  r.detonate({ type: 'molotov', owner: a.id, x: 32.5, y: 1.1, z: 18 }, r.now());
+  assert.strictEqual(r.fires.length, 1, 'fire created');
+  const t0 = r.now();
+  for (let k = 1; k <= 8; k++) r.updateFires(t0 + k * 260);
+  assert.ok(v.hp < 100 && v.hp > 0, 'victim burned: ' + v.hp);
+  r.smokes.push({ id: 99, x: 32.5, y: 2, z: 18.5, t0: t0 - 1000 });
+  r.updateFires(t0 + 3000);
+  assert.strictEqual(r.fires.length, 0, 'smoke extinguished the fire');
+});
+
+test('C4 breach charge sticks to a wall, blows a hole in it, never the map border', () => {
+  const r = makeRoom(); r.phase = 'live';
+  const a = r.addHuman(fakeSocket('a'), 'A'); r.assignTeam(a, 'T'); a.alive = true;
+  // dustgrid: B-block wall at x=15..26, z=12..38 (indestructible WALL)
+  assert.strictEqual(r.world.get(15, 2, 16), S.BLOCK.WALL);
+  const g = { x: 13.5, y: 2.5, z: 16.5, vx: 8, vy: 0, vz: 0, stick: true };
+  for (let i = 0; i < 30 && !g.stuck; i++) S.stepGrenade(g, 1 / 30, r.world);
+  assert.ok(g.stuck, 'charge stuck to the wall');
+  r.detonate({ type: 'breach', owner: a.id, x: g.x, y: g.y, z: g.z }, r.now());
+  assert.strictEqual(r.world.get(15, 2, 16), S.BLOCK.AIR, 'wall opened');
+  assert.ok(r.navDirty, 'bots re-path through the new hole');
+  r.detonate({ type: 'breach', owner: a.id, x: 0.9, y: 2.5, z: 30 }, r.now());
+  assert.notStrictEqual(r.world.get(0, 2, 30), S.BLOCK.AIR, 'border stays intact');
+  assert.notStrictEqual(r.world.get(14, 0, 16), S.BLOCK.AIR, 'floor stays intact');
+});
+
+function tmpStore() {
+  const file = path.join(os.tmpdir(), 'blockops-test-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.json');
+  return new Store({ url: '', key: '', file, flushMs: 60000 });
+}
+const TOKEN = 'abcdefghijklmnopqrstuvwxyz123456';
+
+test('accounts: create / login / wrong token / rewards / buy / equip', () => {
+  const st = tmpStore();
+  return st.auth('ABC1234', TOKEN, 'Ali').then(async (res) => {
+    assert.ok(res.ok && res.created, 'created');
+    assert.strictEqual(res.profile.coins, C.COINS.NEW_ACCOUNT);
+    const bad = await st.auth('ABC1234', 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz', 'X');
+    assert.ok(!bad.ok && bad.err === 'auth', 'stolen code rejected');
+    const r1 = st.recordMatch('ABC1234', { result: 'win', mode: 'ranked', ranked: true, map: 'dustgrid', kills: 20, deaths: 10, assists: 3, hs: 8, mvps: 4, dmg: 2500, roundsWon: 13, score: [13, 7] });
+    assert.ok(r1.xp > 500 && r1.coins <= C.COINS.MAX_PER_MATCH + r1.levelUps * C.COINS.LEVEL_UP, 'xp/coins ' + r1.xp + '/' + r1.coins);
+    assert.ok(r1.rankDelta > 0 && r1.profile.rank_points > 1000, 'rank up');
+    const ab = st.recordMatch('ABC1234', { result: 'abandon', mode: 'ranked', ranked: true, map: 'harbor', kills: 1, deaths: 5, assists: 0, hs: 0, mvps: 0, dmg: 100, roundsWon: 0, score: [2, 5] });
+    assert.ok(ab.rankDelta < 0 && ab.coins === 0, 'abandon is punished');
+    const coins = st.cached('ABC1234').coins;
+    const tooExpensive = st.buySkin('ABC1234', 'gold');
+    if (coins < C.SKINS.gold.price) assert.ok(!tooExpensive.ok, 'cannot buy without coins');
+    st.cached('ABC1234').coins = 5000;
+    assert.ok(st.buySkin('ABC1234', 'gold').ok);
+    assert.ok(!st.buySkin('ABC1234', 'gold').ok, 'no double purchase');
+    assert.strictEqual(st.cached('ABC1234').coins, 5000 - C.SKINS.gold.price);
+    assert.ok(!st.equip('ABC1234', 'krait', 'diamond', S.WEAPONS).ok, 'cannot equip unowned skin');
+    assert.ok(st.equip('ABC1234', 'krait', 'gold', S.WEAPONS).ok);
+    assert.ok(!st.equip('ABC1234', 'he', 'gold', S.WEAPONS).ok, 'grenades have no skins');
+    assert.strictEqual(st.view('ABC1234').equipped.krait, 'gold');
+    assert.ok(!st.grantCoins('ABC1234', -50), 'negative grants refused');
+    const h = await st.history('ABC1234', 10);
+    assert.strictEqual(h.length, 2);
+    const del = await st.deleteAccount('ABC1234', TOKEN);
+    assert.ok(del.ok && !st.cached('ABC1234'));
+    await st.close();
+  });
+});
+
+test('skins are visual only: weapon stats identical with any cosmetic equipped', () => {
+  const r1 = duel('krait', 0, false, 'chest');
+  const r2 = (() => {
+    const r = makeRoom(); r.phase = 'live';
+    const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V');
+    r.assignTeam(a, 'T'); r.assignTeam(v, 'CT'); a.alive = v.alive = true; a.hp = v.hp = 100;
+    a.equip = { krait: 'diamond', agent: 'gold' };
+    place(a, 32.5, 1, 15); place(v, 32.5, 1, 25);
+    a.weapons[1] = { id: 'krait', ammo: 30, reserve: 90 }; a.slot = 1; a.drawEnd = 0;
+    const eye = [a.x, a.y + S.CONFIG.PLAYER.EYE, a.z];
+    const ang = aim(eye, [v.x, v.y + 1.1, v.z]);
+    r.onShoot(a, { seq: 1, yaw: ang.yaw, pitch: ang.pitch, ri: 0, t: r.now() });
+    return { v };
+  })();
+  assert.strictEqual(r1.v.hp, r2.v.hp);
+});
+
+test('death match: free buy, kills score, instant respawn with spawn protection', () => {
+  const r = makeRoom({ mode: 'dm' });
+  const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V');
+  r.assignTeam(a, 'T'); r.assignTeam(v, 'CT');
+  r.startMatch();
+  assert.strictEqual(r.phase, 'live');
+  assert.ok(r.onBuy(a, 'longshot') !== false && a.weapons[1].id === 'longshot', 'free AWP');
+  v.protectUntil = 0;
+  r.killPlayer(v, a, 'longshot', false);
+  assert.strictEqual(r.score.T, 1, 'team kill counted');
+  const now = r.now();
+  r.updateRespawnMode(now + 2100);
+  assert.ok(v.alive, 'respawned');
+  assert.ok(v.protectUntil > now, 'spawn protection');
+  const res = r.dealDamage(v, a, 50, 'chest', 'krait');
+  assert.strictEqual(res.dealt, 0, 'protected');
+  r.killPlayer(a, v, 'knife', false); r.updateRespawnMode(r.now() + 2100);
+  assert.strictEqual(a.weapons[1] && a.weapons[1].id, 'longshot', 'loadout remembered');
+});
+
+test('gun game: every kill advances the ladder; last knife kill wins the match', () => {
+  const events = [];
+  const io = { to: () => ({ emit: (ev, d) => events.push([ev, d]) }) };
+  const r = new Room(io, 'GG', () => {}, { map: 'dustgrid', mode: 'gungame' }); clearInterval(r.timer);
+  const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V');
+  r.assignTeam(a, 'T'); r.assignTeam(v, 'CT'); r.startMatch();
+  const L = S.MODES.gungame.ladder;
+  assert.strictEqual(a.weapons[1].id, L[0]);
+  for (let i = 0; i < L.length; i++) {
+    v.alive = true; v.hp = 100; v.protectUntil = 0;
+    r.killPlayer(v, a, L[Math.min(i, L.length - 1)], false);
+    if (i < L.length - 1) assert.strictEqual(r.currentWeaponId(a), L[i + 1], 'step ' + i);
+  }
+  assert.strictEqual(r.phase, 'gameover');
+  const over = events.find((e) => e[0] === 'over');
+  assert.ok(over && over[1].w === 'T' && over[1].hl, 'winner announced');
+});
+
+test('1v1 duel: one player per team, preset loadout, no buying, no drops', () => {
+  const r = makeRoom({ mode: 'duel' });
+  const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V');
+  assert.notStrictEqual(a.team, v.team);
+  assert.strictEqual(r.addBot('T'), null, 'teams are full (1v1)');
+  r.startMatch();
+  const set = S.MODES.duel.sets[0];
+  assert.strictEqual(a.weapons[1].id, set[0]); assert.strictEqual(a.weapons[2].id, set[1]);
+  assert.ok(!r.canBuy(a), 'no market');
+  r.phase = 'live';
+  r.killPlayer(v, a, set[0], false);
+  assert.strictEqual(r.drops.length, 0, 'no weapon drops');
+  r.checkRoundEnd(r.now());
+  assert.strictEqual(r.score[a.team], 1);
+});
+
+test('knife-only: knife is the only weapon', () => {
+  const r = makeRoom({ mode: 'knife' });
+  const a = r.addHuman(fakeSocket('a'), 'A'); r.assignTeam(a, 'T');
+  r.startMatch();
+  assert.ok(!a.weapons[1] && !a.weapons[2] && a.weapons[3].id === 'knife');
+  assert.strictEqual(r.currentWeaponId(a), 'knife');
+});
+
+test('map vote: most-voted map is loaded next; rewards recorded once per match', () => {
+  const st = tmpStore();
+  const r = makeRoom({ store: st });
+  return st.auth('VOTE123', TOKEN, 'V').then(() => {
+    const sa = fakeSocket('a'), sb = fakeSocket('b');
+    const a = r.addHuman(sa, 'A'), b = r.addHuman(sb, 'B');
+    r.assignTeam(a, 'T'); r.assignTeam(b, 'CT');
+    a.acct = 'VOTE123';
+    r.startMatch();
+    r.endMatch('T', null);
+    assert.strictEqual(r.voteOpts.length, 3);
+    const pick = r.voteOpts[2];
+    r.onVote(a, pick); r.onVote(b, pick);
+    assert.strictEqual(r.votedMap(), pick);
+    assert.ok(sa.events.some((e) => e[0] === 'progress'), 'progress sent');
+    r.removePlayer(a.id);    // leaving after the match is over is NOT an abandon
+    assert.strictEqual(st.cached('VOTE123').stats.matches, 1);
+    assert.strictEqual(st.cached('VOTE123').stats.wins, 1);
+    return st.close();
+  });
+});
+
 for (const mapId of S.MAP_ORDER) {
   test(`full 10-bot match on ${mapId} completes with a winner`, () => {
     Object.assign(S.CONFIG.ROUND, { WARMUP: 1, FREEZE: 1, POST: 1, GAMEOVER: 1, LIVE: 90 });
@@ -306,4 +492,4 @@ for (const mapId of S.MAP_ORDER) {
   });
 }
 
-console.log(`\n${passed} test geçti${process.exitCode ? ', bazı testler BAŞARISIZ' : ''}.`);
+Promise.all(pending).then(() => console.log(`\n${passed} test geçti${process.exitCode ? ', bazı testler BAŞARISIZ' : ''}.`));

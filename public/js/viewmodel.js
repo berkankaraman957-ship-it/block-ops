@@ -46,6 +46,8 @@ export class ViewModel {
     this.flashRot = 0;
     this.visible = true;
     this.time = 0;
+    this.skin = '';
+    this.inspectStart = -1e9;
   }
 
   setTeam(team) {
@@ -53,13 +55,17 @@ export class ViewModel {
     this.team = team;
     const id = this.weaponId;
     this.weaponId = null;
-    if (id) this.setWeapon(id, true);
+    if (id) this.setWeapon(id, true, this.skin);
   }
 
-  setWeapon(id, silent) {
-    if (this.weaponId === id) return;
+  setWeapon(id, silent, skin) {
+    skin = skin || '';
+    if (this.weaponId === id && this.skin === skin) return;
+    if (this.weaponId === id) silent = true;    // only the skin changed
     this.weaponId = id;
-    const gun = buildGun(id);
+    this.skin = skin;
+    this.inspectStart = -1e9;
+    const gun = buildGun(id, skin);
     this.gun = gun;
     this.kind = gun.kind;
     this.holder.children = [];
@@ -103,7 +109,17 @@ export class ViewModel {
   }
 
   // ---- triggers ----
+  /** F: show the weapon off (purely cosmetic animation) */
+  inspect() {
+    if (this.kind === 'grenade') return;
+    if (this.time - this.inspectStart < 2.6) return;
+    if (this.time - this.drawStart < this.drawDur || (this.reloadDur > 0 && this.time - this.reloadStart < this.reloadDur)) return;
+    this.inspectStart = this.time;
+  }
+  cancelInspect() { this.inspectStart = -1e9; }
+
   fire(weapon) {
+    this.inspectStart = -1e9;
     const k = weapon.kick || 0.4;
     this.lastShot = this.time;
     if (weapon.melee) { this.swingStart = this.time; return; }
@@ -114,7 +130,7 @@ export class ViewModel {
     this.flashRot = Math.random() * Math.PI;
   }
   throwNade() { this.throwStart = this.time; }
-  startReload(duration) { this.reloadStart = this.time; this.reloadDur = duration; }
+  startReload(duration) { this.reloadStart = this.time; this.reloadDur = duration; this.inspectStart = -1e9; }
   cancelReload() { this.reloadStart = -1e9; }
   landed(speed) { this.land.impulse(-Math.min(speed, 14) * 0.035); }
 
@@ -221,6 +237,17 @@ export class ViewModel {
       this.gun.mag.pos = [this.gun.mag._base[0], this.gun.mag._base[1] + magOffset, this.gun.mag._base[2]];
     }
     if (this.lPivot) this.lPivot.rot = [-0.9 * lArm, 0.2 * lArm, 0];
+
+    // weapon inspect: bring it in, turn it to show the side (and the skin), flip, return
+    const it = t - this.inspectStart;
+    if (it >= 0 && it < 2.6) {
+      const inn = Ease.inOutQuad(range01(it, 0, 0.45)), out = Ease.inOutQuad(range01(it, 2.15, 2.6));
+      const a = inn * (1 - out);
+      const turn = Math.sin(range01(it, 0.45, 2.15) * Math.PI * 2) * 0.35;
+      px -= 0.09 * a; py += 0.03 * a; pz += 0.06 * a;
+      ry += (0.95 + turn) * a; rz += (0.55 - turn * 0.6) * a; rx += 0.18 * a;
+      if (this.kind === 'knife') { rz += Math.sin(range01(it, 0.8, 1.6) * Math.PI) * 2.6 * a; }
+    }
 
     // draw / deploy
     const d = range01(t - this.drawStart, 0, this.drawDur);

@@ -63,6 +63,7 @@ export class Voice {
     audio.autoplay = true;
     audio.playsInline = true;
     audio.volume = this.volume;
+    audio.muted = this.isMuted(id);
     document.body.appendChild(audio);
     if (this.stream) for (const t of this.stream.getAudioTracks()) pc.addTrack(t, this.stream);
     else pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -121,6 +122,9 @@ export class Voice {
     this.applyMic();
     if (this.g.net && this.stream) this.g.net.emit('talk', on);
   }
+  /** muted = blocked players: their audio is silenced locally */
+  isMuted(id) { return !!(this.g && this.g.isBlockedId && this.g.isBlockedId(id)); }
+  refreshMutes() { for (const [id, p] of this.peers) if (p.audio) p.audio.muted = this.isMuted(id); }
   setVolume(v) {
     this.volume = v;
     for (const p of this.peers.values()) if (p.audio) p.audio.volume = v;

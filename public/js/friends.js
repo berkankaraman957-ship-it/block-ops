@@ -14,13 +14,14 @@ export class Friends {
   constructor(game) {
     this.g = game;
     let id = load('blockops.identity', null);
-    if (!id || !id.code) {
-      const rnd = new Uint32Array(7);
-      (window.crypto || window.msCrypto).getRandomValues(rnd);
-      id = { code: Array.from(rnd, (n) => ALPHABET[n % ALPHABET.length]).join('') };
-      save('blockops.identity', id);
-    }
+    const rand = (n, abc) => { const r = new Uint32Array(n); (window.crypto || window.msCrypto).getRandomValues(r); return Array.from(r, (x) => abc[x % abc.length]).join(''); };
+    if (!id || !id.code) id = { code: rand(7, ALPHABET) };
+    // secret account token (never shown to others): makes the code a real, persistent account
+    if (!id.token) { id.token = rand(32, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'); }
+    save('blockops.identity', id);
     this.code = id.code;
+    this.token = id.token;
+    this.party = null;
     this.list = load('blockops.friends', []);   // [{code, name}]
     this.status = {};
     this.socket = null;
@@ -37,9 +38,21 @@ export class Friends {
       this.socket = window.io(url || undefined, { transports: ['websocket'], reconnection: true, reconnectionDelay: 3000, forceNew: true });
     } catch (e) { return; }
     const s = this.socket;
-    s.on('connect', () => { s.emit('hello', { code: this.code, name: this.myName }); this.refresh(); });
+    s.on('connect', () => { s.emit('hello', { code: this.code, name: this.myName }); this.refresh(); if (this.g.account) this.g.account.auth(); });
+    s.on('disconnect', () => { if (this.g.account) this.g.account.onDisconnect(); this.party = null; this.renderParty(); });
     s.on('friends:request', (m) => this.onRequest(m));
     s.on('friends:invite', (m) => this.onInvite(m));
+    s.on('party:invite', (m) => this.toast(`🎉 <b>${esc(m.name || m.code)}</b> seni partisine çağırıyor<br><small>Parti lideri maça girince otomatik olarak aynı odaya gelirsin</small>`, [
+      ['KATIL', () => s.emit('party:accept', m.party), 'primary'], ['HAYIR', null]]));
+    s.on('party:update', (st) => { this.party = st; this.renderParty(); this.render(); });
+    s.on('party:error', (t) => this.g.hud.centerMsg(String(t), 3000));
+    s.on('party:follow', (m) => {
+      if (this.g.inGame && this.g.roomId === m.room) return;
+      if (!this.g.inGame) {
+        this.g.hud.centerMsg(`Parti lideri ${m.leader} maça girdi — sen de katılıyorsun…`, 3000);
+        this.g.joinRoom(m.room);
+      } else this.toast(`🎉 Parti lideri <b>${esc(m.leader)}</b> başka bir maça girdi<br><small>Oda ${esc(m.room)} · ${esc(m.map || '')}</small>`, [['GİT', () => this.g.joinRoom(m.room), 'primary'], ['KAL', null]]);
+    });
     clearInterval(this._poll);
     this._poll = setInterval(() => this.refresh(), 10000);
   }
@@ -71,6 +84,29 @@ export class Friends {
     save('blockops.friends', this.list);
     this.render();
   }
+  partyInvite(code) {
+    if (!this.socket || !this.socket.connected) return;
+    this.socket.emit('party:invite', code);
+    this.g.hud.centerMsg('Parti daveti gönderildi', 2000);
+    this.g.sfx.ui(true);
+  }
+  partyLeave() { if (this.socket) this.socket.emit('party:leave'); }
+  renderParty() {
+    const box = $('partyBox'), bar = $('partyBar');
+    const pt = this.party;
+    if (!pt) {
+      box.innerHTML = '<div class="muted">Bir arkadaşını partiye çağır (🎉 butonu): sen maça girdiğinde parti üyeleri otomatik olarak aynı odaya gelir.</div>';
+      bar.classList.add('hidden');
+      return;
+    }
+    const lead = pt.leader === this.code;
+    const chips = pt.members.map((m) => `<span class="pm ${m.online ? '' : 'off'}">${m.code === pt.leader ? '👑 ' : ''}${esc(m.code === this.code ? 'Sen' : m.name)}</span>`).join('');
+    box.innerHTML = `<div class="party-row">${chips}</div><div class="muted">${lead ? 'Partinin lideri sensin: HIZLI OYNA ya da ODA KUR dediğinde herkes seninle gelir.' : 'Lider maça girdiğinde otomatik katılacaksın.'}</div><button id="btnPartyLeave" class="danger mini">PARTİDEN AYRIL</button>`;
+    bar.innerHTML = `🎉 PARTİ (${pt.members.length}/5): ${chips}`;
+    bar.classList.remove('hidden');
+    $('btnPartyLeave').addEventListener('click', () => this.partyLeave());
+  }
+
   invite(code) {
     if (!this.g.inGame || !this.socket) return;
     this.socket.emit('friends:invite', { code, room: this.g.roomId });
@@ -142,7 +178,9 @@ export class Friends {
       const join = st.online && st.room && st.room !== this.g.roomId ? `<button data-join="${esc(st.room)}">KATIL</button>` : '';
       const inv = this.g.inGame && st.online && st.room !== this.g.roomId ? `<button data-inv="${f.code}" class="primary">DAVET ET</button>` : '';
       const del = inPause ? '' : `<button data-del="${f.code}" class="del" title="Sil">✕</button>`;
-      return `<div class="friend"><div><b>${esc(f.name)}</b><small>${f.code}</small><br>${state}</div><div class="fa">${join}${inv}${del}</div></div>`;
+      const inParty = this.party && this.party.members.some((m) => m.code === f.code);
+      const party = !inPause && st.online && !inParty ? `<button data-party="${f.code}" title="Partiye çağır">🎉 PARTİ</button>` : '';
+      return `<div class="friend"><div><b>${esc(f.name)}</b><small>${f.code}</small><br>${state}</div><div class="fa">${join}${inv}${party}${del}</div></div>`;
     };
     box.innerHTML = sorted.map((f) => row(f, false)).join('');
     if (pbox) pbox.innerHTML = sorted.map((f) => row(f, true)).join('');
@@ -151,6 +189,7 @@ export class Friends {
       root.querySelectorAll('[data-join]').forEach((b) => b.addEventListener('click', () => this.g.joinRoom(b.dataset.join)));
       root.querySelectorAll('[data-inv]').forEach((b) => b.addEventListener('click', () => this.invite(b.dataset.inv)));
       root.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => this.remove(b.dataset.del)));
+      root.querySelectorAll('[data-party]').forEach((b) => b.addEventListener('click', () => this.partyInvite(b.dataset.party)));
     }
   }
 }

@@ -33,6 +33,21 @@ Tarayıcıda aç → **HIZLI OYNA**. "Bot Sayısı = 9" ile tek başına tam 5v5
 
 ---
 
+## 🆕 v3.0 — Hesaplar, mağaza, yeni modlar
+
+**Hesap + profil:** İlk açılışta otomatik hesap (arkadaş kodu + cihazda saklanan gizli anahtar, e-posta yok). Seviye/XP, Blok Coin, rütbe (Bronz → Usta), istatistikler, son 10 maç. Hesap anahtarı ile başka cihaza taşıma, uygulama içinden hesap silme (mağaza şartı).
+
+**Mağaza (adil):** 16 silah kaplaması + 6 ajan rozeti. Tamamen görsel — hasar/isabet/hız/ses değişmez, takım renkleri hep okunur. Blok Coin şimdilik oynayarak kazanılır; gerçek para paketleri `server/store.js → grantCoins` kancasıyla, mağaza fatura doğrulamasından sonra bağlanacak.
+
+**Modlar:** Rekabetçi · Dereceli (rütbe puanı, terk cezası) · Ölüm Maçı · Silah Oyunu · Sadece Bıçak · 1v1 Düello. Maç sonunda harita oylaması. 2 yeni harita: Citadel, Neon District.
+
+**Oynanış:** Molotof (sis söndürür), duvar delen C4 kırıcı şarj, leş kamerası (killcam), silah inceleme (F), kask fırlaması + ragdoll ölüm, telefon titreşimi, raunt vurgu anları (clutch / ACE), harita ortam sesleri, oyuncu engelle/bildir, parti sistemi.
+
+### Supabase kurulumu (kalıcı hesaplar)
+1. Supabase → **SQL Editor** → `scripts/supabase.sql` içeriğini yapıştır → **Run**.
+2. Render → servis → **Environment**: `SUPABASE_URL` ve `SUPABASE_SERVICE_KEY` (service_role anahtarı). Anahtarı kimseyle paylaşma, koda yazma.
+3. `/health` çıktısında `"db":"supabase"` görmelisin. Değişkenler yoksa sunucu yerel dosyaya (`data/accounts.json`) yazar.
+
 ## Proje yapısı
 
 ```

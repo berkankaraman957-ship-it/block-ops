@@ -15,7 +15,7 @@
   // CONFIG
   // ---------------------------------------------------------------------------
   const CONFIG = {
-    VERSION: '2.3.1',
+    VERSION: '3.0.0',
     TICK_RATE: 30,            // server simulation + snapshot rate (Hz)
     INPUT_RATE: 60,           // client fixed input/physics step (Hz)
     INTERP_DELAY_MS: 100,     // base remote interpolation delay (client adapts to jitter)
@@ -45,10 +45,14 @@
     },
     GRENADE: {
       GRAVITY: 20, THROW_SPEED: 16, LOB_SPEED: 8, BOUNCE: 0.42, FRICTION: 0.72, RADIUS: 0.08,
-      MAX: { he: 1, flash: 2, smoke: 1 }, MAX_TOTAL: 4,
+      MAX: { he: 1, flash: 2, smoke: 1, molotov: 1, breach: 1 }, MAX_TOTAL: 4,
       he: { fuse: 1.6, radius: 6.5, damage: 98, blockRadius: 2.4 },
       flash: { fuse: 1.5, range: 34, maxBlind: 3.8 },
-      smoke: { minFuse: 1.2, maxFuse: 3.5, radius: 3.8, duration: 17 }
+      smoke: { minFuse: 1.2, maxFuse: 3.5, radius: 3.8, duration: 17 },
+      // molotov: bursts on landing (or after maxFuse), burns an area; smoke puts it out
+      molotov: { maxFuse: 2.2, radius: 3.0, duration: 7, dps: 38 },
+      // breach charge (C4): sticks to the first surface it touches, then blows a hole in walls
+      breach: { fuse: 2.0, radius: 3.6, damage: 85, blockRadius: 2.2 }
     },
     FALL: { SAFE_SPEED: 11.0, DMG_PER: 8.0 },
     PART_MUL: { head: 4.0, chest: 1.0, legs: 0.75 }
@@ -75,6 +79,28 @@
       bot: { react: [150, 290], aimErr: 0.07, turn: 11.5, head: 0.26, comp: 0.9, burst: [4, 9], pause: [140, 280], fovDot: -0.5, spot: 72, strafe: 0.9, smart: 0.9 }
     }
   };
+
+  /*
+   * Game modes. Round modes use the competitive round loop; respawn modes run one long
+   * "live" phase with instant respawns.
+   */
+  const GG_LADDER = ['krait', 'sentinel', 'hornet', 'mauler', 'viper', 'ranger', 'hc50', 'vex', 'p9', 'knife'];
+  const DUEL_SETS = [['krait', 'p9'], ['sentinel', 'p12'], ['ranger', 'hc50'], ['breacher', 'p9'], ['hornet', 'vex'], ['longshot', 'p12'], [null, 'hc50']];
+  const MODES = {
+    comp: { id: 'comp', label: 'REKABETÇİ', icon: '💣', desc: '5v5 · bomba kur / imha et · ekonomi · ilk 13 raunt kazanır',
+      bomb: true, buy: true, win: 13, maxRounds: 24, half: 12, perTeam: 5 },
+    ranked: { id: 'ranked', label: 'DERECELİ', icon: '🏆', desc: 'Rekabetçi kurallar · kazan → rütbe puanı, kaybet / çık → puan kaybı',
+      bomb: true, buy: true, win: 13, maxRounds: 24, half: 12, perTeam: 5, ranked: true },
+    dm: { id: 'dm', label: 'ÖLÜM MAÇI', icon: '☠', desc: 'Takım ölüm maçı · anında yeniden doğ · bütün silahlar bedava · 50 leş',
+      respawn: true, freeBuy: true, killLimit: 50, timeLimit: 480, perTeam: 5 },
+    gungame: { id: 'gungame', label: 'SİLAH OYUNU', icon: '🔫', desc: 'Her leşte yeni silah · ' + GG_LADDER.length + '. silah bıçak · ilk bitiren kazanır',
+      respawn: true, ladder: GG_LADDER, timeLimit: 600, perTeam: 5 },
+    knife: { id: 'knife', label: 'SADECE BIÇAK', icon: '🔪', desc: 'Raunt tabanlı · yalnızca bıçak · ilk 8 raunt kazanır',
+      loadout: 'knife', win: 8, maxRounds: 15, half: 0, perTeam: 5, live: 75 },
+    duel: { id: 'duel', label: '1v1 DÜELLO', icon: '⚔', desc: 'Bire bir · her raunt farklı silah seti · ilk 8 raunt kazanır',
+      loadout: 'duel', sets: DUEL_SETS, win: 8, maxRounds: 15, half: 0, perTeam: 1, live: 60 }
+  };
+  const MODE_ORDER = ['comp', 'ranked', 'dm', 'gungame', 'knife', 'duel'];
 
   // Input buttons (bitmask)
   const BTN = { JUMP: 1, CROUCH: 2, WALK: 4, USE: 8, FIRE: 16 };
@@ -582,15 +608,17 @@
     // --- Grenades (slot 4)
     he: W({ id: 'he', name: 'HE Bombası', cat: 'grenade', slot: 4, price: 300, grenade: 'he', rpm: 60, drawTime: 0.5 }),
     flash: W({ id: 'flash', name: 'Flaş Bombası', cat: 'grenade', slot: 4, price: 200, grenade: 'flash', rpm: 60, drawTime: 0.5 }),
-    smoke: W({ id: 'smoke', name: 'Sis Bombası', cat: 'grenade', slot: 4, price: 300, grenade: 'smoke', rpm: 60, drawTime: 0.5 })
+    smoke: W({ id: 'smoke', name: 'Sis Bombası', cat: 'grenade', slot: 4, price: 300, grenade: 'smoke', rpm: 60, drawTime: 0.5 }),
+    molotov: W({ id: 'molotov', name: 'Molotof', cat: 'grenade', slot: 4, price: 400, grenade: 'molotov', rpm: 60, drawTime: 0.5 }),
+    breach: W({ id: 'breach', name: 'C4 Kırıcı Şarj', cat: 'grenade', slot: 4, price: 500, grenade: 'breach', rpm: 60, drawTime: 0.6 })
   };
-  const GRENADE_ORDER = ['he', 'flash', 'smoke'];
+  const GRENADE_ORDER = ['he', 'flash', 'smoke', 'molotov', 'breach'];
   const BUY_LIST = {
     pistols: ['p9', 'p12', 'vex', 'hc50'],
     heavy: ['breacher', 'mauler', 'titan'],
     smg: ['viper', 'wasp', 'hornet'],
     rifles: ['falcon', 'lynx', 'krait', 'sentinel', 'ranger', 'longshot'],
-    grenades: ['he', 'flash', 'smoke'],
+    grenades: ['he', 'flash', 'smoke', 'molotov', 'breach'],
     gear: ['kevlar', 'helmet', 'defuse']
   };
   const ITEMS = {
@@ -652,6 +680,7 @@
   // ---------------------------------------------------------------------------
   function stepGrenade(g, dt, world) {
     const G = CONFIG.GRENADE;
+    if (g.stuck) return false;
     g.vy -= G.GRAVITY * dt;
     let bounced = false;
     const steps = Math.max(1, Math.ceil(Math.hypot(g.vx, g.vy, g.vz) * dt / 0.2));
@@ -663,6 +692,12 @@
         g[ax] += g[vk] * h;
         if (world.isSolid(Math.floor(g.x), Math.floor(g.y), Math.floor(g.z))) {
           g[ax] = old;
+          if (g.stick) {   // sticky charges: glue to the first surface hit
+            g.vx = g.vy = g.vz = 0; g.stuck = true; g.rest = true;
+            g.hitAxis = ax;
+            return true;
+          }
+          if (ax === 'y' && g.vy < 0) g.landed = true;
           g[vk] = -g[vk] * G.BOUNCE;
           if (ax === 'y') { g.vx *= G.FRICTION; g.vz *= G.FRICTION; }
           else { g.vy *= 0.9; }
@@ -698,7 +733,7 @@
   }
 
   return {
-    CONFIG, DIFFICULTY, BTN, BLOCK, BLOCK_INFO, WEAPONS, ITEMS, BUY_LIST, GRENADE_ORDER, DEG,
+    CONFIG, DIFFICULTY, MODES, MODE_ORDER, GG_LADDER, BTN, BLOCK, BLOCK_INFO, WEAPONS, ITEMS, BUY_LIST, GRENADE_ORDER, DEG,
     clamp, lerp, wrapAngle, lerpAngle, anglesToDir, dirToAngles, mulberry32, shotSeed, hash3,
     VoxelWorld, MAPS, MAP_ORDER, registerMap, getMap, nextMapId, generateMap, inZone, siteAt, siteCenter,
     buildNav, findPath, navPath, nearestWalkable, walkLineClear,

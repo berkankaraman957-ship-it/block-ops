@@ -13,13 +13,18 @@
 const S = require('../shared/shared.js');
 const BotBrain = require('./Bot');
 
-const { CONFIG, WEAPONS, ITEMS, BLOCK, BLOCK_INFO, BTN, DIFFICULTY, GRENADE_ORDER } = S;
+const { CONFIG, WEAPONS, ITEMS, BLOCK, BLOCK_INFO, BTN, DIFFICULTY, MODES, GRENADE_ORDER } = S;
+const COS = require('../shared/cosmetics.js');
+const SKIN_IDS = Object.keys(COS.SKINS);
+const RESPAWN_MS = 2000, PROTECT_MS = 1500, FIRE_TICK_MS = 250;
+const emptyNades = () => ({ he: 0, flash: 0, smoke: 0, molotov: 0, breach: 0 });
 const R = CONFIG.ROUND, E = CONFIG.ECON, BB = CONFIG.BOMB, GN = CONFIG.GRENADE;
 
 const BOT_NAMES = ['Ayaz', 'Kartal', 'Bora', 'Toprak', 'Demir', 'Atlas', 'Poyraz', 'Tuna', 'Yiğit', 'Arda', 'Kaya', 'Alp', 'Doruk', 'Efe'];
 let numCounter = 1;
 let nadeCounter = 1;
 let dropCounter = 1;
+let fireCounter = 1;
 const MAX_DROPS = 30;
 const PICKUP_RANGE = 1.25;
 
@@ -36,6 +41,13 @@ class Room {
     this.players = new Map();
     this.bots = new Map();
     this.diff = DIFFICULTY[opts.difficulty] || DIFFICULTY.medium;
+    this.mode = MODES[opts.mode] || MODES.comp;
+    this.perTeam = this.mode.perTeam;
+    this.store = opts.store || null;
+    this.fires = [];
+    this.voteOpts = null;
+    this.votes = new Map();
+    this.clutch = {};
     this.world = new S.VoxelWorld();
     this.loadMap(S.MAPS[opts.map] ? opts.map : S.MAP_ORDER[0]);
     this.startTime = Date.now();
@@ -88,11 +100,12 @@ class Room {
       x: 32.5, y: 1, z: 32.5, vx: 0, vy: 0, vz: 0, onGround: true, crouch: false, yaw: 0, pitch: 0,
       alive: false, hp: 100, armor: 0, helmet: false, kit: false, money: this.diff.startMoney,
       weapons: { 1: null, 2: null, 3: { id: 'knife', ammo: 0, reserve: 0 } },
-      nades: { he: 0, flash: 0, smoke: 0 }, nadeSel: 'he',
+      nades: emptyNades(), nadeSel: 'he',
       slot: 3, prevSlot: 2, drawEnd: 0, reloadEnd: 0, lastShot: -1e9, recoilIdx: 0, lastShotSeq: 0, scoped: 0,
       inputQueue: [], lastSeq: 0, budget: 0, buttons: 0, useHeld: false, history: [],
       kills: 0, deaths: 0, assists: 0, mvps: 0, roundKills: 0, dmgBy: new Map(), damageDealt: 0, headshots: 0,
-      respawnAt: 0, ping: 0, lastAttacker: null, lastAttackTime: 0, blindUntil: 0
+      respawnAt: 0, ping: 0, lastAttacker: null, lastAttackTime: 0, blindUntil: 0,
+      acct: null, equip: {}, level: 0, rankId: '', gg: 0, roundsWon: 0, protectUntil: 0, recorded: false, dmLoad: {}, fireAcc: 0
     };
   }
 
@@ -106,11 +119,13 @@ class Room {
 
   addBot(team) {
     const t = team === 'T' || team === 'CT' ? team : this.autoTeam();
-    if (!t || t === 'SPEC' || this.teamCount(t) >= CONFIG.MAX_PER_TEAM) return null;
+    if (!t || t === 'SPEC' || this.teamCount(t) >= this.perTeam) return null;
     const used = new Set([...this.players.values()].map((p) => p.name));
     const base = BOT_NAMES.find((n) => !used.has('BOT ' + n)) || ('X' + numCounter);
     const id = 'bot_' + numCounter + '_' + Math.random().toString(36).slice(2, 6);
     const p = this.createPlayer(id, 'BOT ' + base, true, null);
+    // bots show off a random cosmetic now and then (purely visual)
+    if (Math.random() < 0.45) p.equip = { '*': SKIN_IDS[Math.floor(Math.random() * SKIN_IDS.length)] };
     this.players.set(id, p);
     this.bots.set(id, new BotBrain(this, p));
     this.assignTeam(p, t);
@@ -122,14 +137,14 @@ class Room {
 
   autoTeam() {
     const t = this.teamCount('T'), ct = this.teamCount('CT');
-    if (t >= CONFIG.MAX_PER_TEAM && ct >= CONFIG.MAX_PER_TEAM) return 'SPEC';
+    if (t >= this.perTeam && ct >= this.perTeam) return 'SPEC';
     if (t === ct) return Math.random() < 0.5 ? 'T' : 'CT';
     return t < ct ? 'T' : 'CT';
   }
 
   assignTeam(p, team) {
     if (team !== 'T' && team !== 'CT') team = 'SPEC';
-    if (team !== 'SPEC' && p.team !== team && this.teamCount(team) >= CONFIG.MAX_PER_TEAM) {
+    if (team !== 'SPEC' && p.team !== team && this.teamCount(team) >= this.perTeam) {
       const bot = [...this.players.values()].find((q) => q.isBot && q.team === team);
       if (bot) this.removePlayer(bot.id); else return false;
     }
@@ -138,6 +153,7 @@ class Room {
     p.alive = false;
     this.giveDefaults(p);
     if (this.phase === 'warmup' && team !== 'SPEC') { p.money = E.WARMUP_MONEY; this.spawn(p, -1); }
+    else if (this.mode.respawn && this.phase === 'live' && team !== 'SPEC') p.respawnAt = this.now() + 500;
     return true;
   }
 
@@ -145,6 +161,8 @@ class Room {
     const p = this.players.get(id);
     if (!p) return;
     if (p.alive) this.dropBombIfCarrier(p);
+    // leaving a running match counts as an abandon (no rewards, rank penalty in ranked)
+    if (!p.isBot && p.acct && !p.recorded && this.matchRunning()) this.recordFor(p, 'abandon');
     this.players.delete(id);
     this.bots.delete(id);
     if (p.socket) p.socket.leave(this.id);
@@ -152,27 +170,65 @@ class Room {
   }
 
   giveDefaults(p) {
+    const M = this.mode;
+    const full = (id) => (id && WEAPONS[id] ? { id, ammo: WEAPONS[id].mag, reserve: WEAPONS[id].reserve } : null);
     const pistol = p.team === 'CT' ? 'p12' : 'p9';
-    const w = WEAPONS[pistol];
-    p.weapons = { 1: null, 2: { id: pistol, ammo: w.mag, reserve: w.reserve }, 3: { id: 'knife', ammo: 0, reserve: 0 } };
-    p.nades = { he: 0, flash: 0, smoke: 0 };
-    p.slot = 2; p.prevSlot = 3;
+    p.weapons = { 1: null, 2: full(pistol), 3: { id: 'knife', ammo: 0, reserve: 0 } };
+    p.nades = emptyNades();
     p.armor = 0; p.helmet = false; p.kit = false;
+    if (M.loadout === 'knife') {
+      p.weapons[2] = null;
+    } else if (M.loadout === 'duel') {
+      const set = this.duelSet || M.sets[0];
+      p.weapons[1] = full(set[0]); p.weapons[2] = full(set[1]);
+      p.armor = 100; p.helmet = true;
+    } else if (M.ladder) {
+      const id = M.ladder[Math.min(p.gg, M.ladder.length - 1)];
+      p.weapons[2] = null;
+      if (id !== 'knife') p.weapons[WEAPONS[id].slot] = full(id);
+      p.armor = 100; p.helmet = true;
+    } else if (M.freeBuy) {
+      p.money = E.MAX;
+      for (const s of [1, 2]) if (p.dmLoad[s]) p.weapons[s] = full(p.dmLoad[s]);
+      p.armor = 100; p.helmet = true;
+    }
+    p.slot = p.weapons[1] ? 1 : p.weapons[2] ? 2 : 3; p.prevSlot = 3;
     p.reloadEnd = 0; p.scoped = 0; p.recoilIdx = 0;
   }
 
-  nadeCount(p) { return p.nades.he + p.nades.flash + p.nades.smoke; }
+  nadeCount(p) { let n = 0; for (const k of GRENADE_ORDER) n += p.nades[k] || 0; return n; }
   hasSlot(p, slot) { return slot === 4 ? this.nadeCount(p) > 0 : !!p.weapons[slot]; }
   currentWeaponId(p) {
     if (p.slot === 4) return this.nadeCount(p) > 0 ? p.nadeSel : 'knife';
     return p.weapons[p.slot] ? p.weapons[p.slot].id : 'knife';
   }
 
+  /** respawn modes: choose a spawn point far from living enemies (no spawn camping) */
+  safeSpawn(p) {
+    const cands = this.map.spawns.T.concat(this.map.spawns.CT);
+    for (const site of ['A', 'B']) { const c = S.siteCenter(this.map, site); const n = S.nearestWalkable(this.nav, c[0], c[1]); if (n) cands.push([n[0] + 0.5, 1, n[1] + 0.5]); }
+    for (let i = 0; i < 14; i++) {
+      const n = S.nearestWalkable(this.nav, 4 + Math.random() * 56, 4 + Math.random() * 56);
+      if (n && !this.world.isSolid(n[0], 1, n[1]) && !this.world.isSolid(n[0], 2, n[1])) cands.push([n[0] + 0.5, 1, n[1] + 0.5]);
+    }
+    let best = cands[0], bestScore = -1;
+    for (const c of cands) {
+      let dmin = 99;
+      for (const q of this.players.values()) if (q !== p && q.alive && q.team !== p.team) dmin = Math.min(dmin, Math.hypot(q.x - c[0], q.z - c[2]));
+      let mate = 0;
+      for (const q of this.players.values()) if (q !== p && q.alive && Math.hypot(q.x - c[0], q.z - c[2]) < 0.9) mate = 1;
+      const score = Math.min(dmin, 30) + Math.random() * 6 - mate * 50;
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  }
+
   spawn(p, index) {
     if (p.team !== 'T' && p.team !== 'CT') return;
     const list = this.map.spawns[p.team];
     let sp;
-    if (index >= 0) sp = list[index % list.length];
+    if (this.mode.respawn && this.phase === 'live') sp = this.safeSpawn(p);
+    else if (index >= 0) sp = list[index % list.length];
     else {
       const shuffled = list.slice().sort(() => Math.random() - 0.5);
       sp = shuffled.find((c) => ![...this.players.values()].some((q) => q !== p && q.alive && Math.hypot(q.x - c[0], q.z - c[2]) < 0.8)) || shuffled[0];
@@ -181,6 +237,8 @@ class Room {
     p.vx = p.vy = p.vz = 0; p.onGround = true; p.crouch = false;
     p.yaw = this.map.spawnYaw[p.team]; p.pitch = 0;
     p.alive = true; p.hp = 100;
+    p.protectUntil = this.mode.respawn ? this.now() + PROTECT_MS : 0;
+    if (this.mode.respawn && this.phase === 'live') p.yaw = Math.atan2(-(32 - p.x), -(32 - p.z));
     p.dmgBy = new Map();
     p.history = [];
     p.reloadEnd = 0; p.scoped = 0; p.planting = 0; p.defusing = 0; p.blindUntil = 0;
@@ -217,6 +275,8 @@ class Room {
 
   canBuy(p) {
     if (!p.alive || (p.team !== 'T' && p.team !== 'CT')) return false;
+    if (this.mode.freeBuy) return true;
+    if (!this.mode.buy) return false;
     if (!S.inZone(this.map.buyZones[p.team], p.x, p.z)) return false;
     if (this.phase === 'warmup' || this.phase === 'freeze') return true;
     if (this.phase === 'live') return this.now() < this.buyEnd;
@@ -226,7 +286,19 @@ class Room {
   onBuy(p, item) {
     const reply = (ok, msg) => { if (p.socket) p.socket.emit('buyr', { ok, msg, item }); return ok; };
     if (typeof item !== 'string') return false;
-    if (!this.canBuy(p)) return reply(false, 'Satın alma bölgesinde/süresinde değilsin');
+    if (!this.canBuy(p)) return reply(false, this.mode.buy || this.mode.freeBuy ? 'Satın alma bölgesinde/süresinde değilsin' : 'Bu modda market kapalı');
+    if (this.mode.freeBuy) {
+      // death-match: everything is free; remember the loadout for the next respawns
+      p.money = E.MAX;
+      const fw = WEAPONS[item];
+      if (fw && !fw.melee && !fw.grenade && fw.team && fw.team !== p.team) return reply(false, 'Bu silah karşı takıma ait');
+      if (fw && !fw.melee && !fw.grenade) {
+        p.dmLoad[fw.slot] = item;
+        p.weapons[fw.slot] = { id: item, ammo: fw.mag, reserve: fw.reserve };
+        this.switchSlot(p, fw.slot, true);
+        return reply(true, `${fw.name} (her doğuşta seninle)`);
+      }
+    }
     const w = WEAPONS[item];
     if (w && w.grenade) {
       if (p.nades[item] >= GN.MAX[item]) return reply(false, 'Bu bombadan daha fazla taşıyamazsın');
@@ -279,8 +351,9 @@ class Room {
     if (slot === 4 && p.slot === 4 && !force) {
       // cycle grenade type
       const i = GRENADE_ORDER.indexOf(p.nadeSel);
-      for (let k = 1; k <= 3; k++) {
-        const n = GRENADE_ORDER[(i + k) % 3];
+      const L = GRENADE_ORDER.length;
+      for (let k = 1; k <= L; k++) {
+        const n = GRENADE_ORDER[(i + k) % L];
         if (p.nades[n] > 0) { p.nadeSel = n; break; }
       }
       p.drawEnd = this.now() + 300;
@@ -321,6 +394,7 @@ class Room {
     if (!finite(msg.yaw) || !finite(msg.pitch)) return;
     if (now < p.drawEnd - 60 || p.reloadEnd) return;
     const yaw = S.wrapAngle(msg.yaw), pitch = S.clamp(msg.pitch, -1.55, 1.55);
+    p.protectUntil = 0;   // shooting ends spawn protection
     if (p.slot === 4) { p.lastShotSeq = msg.seq | 0; this.throwGrenade(p, yaw, pitch, !!msg.lob); return; }
     const ws = p.weapons[p.slot];
     if (!ws) return;
@@ -368,7 +442,7 @@ class Room {
     const dir = S.anglesToDir(p.yaw, thrown ? 0.25 : 0);
     const sp = thrown ? 5.5 : 1.2;
     const d = {
-      id: dropCounter++, wid: ws.id, ammo: ws.ammo, reserve: ws.reserve, by: p.id, t0: this.now(),
+      id: dropCounter++, wid: ws.id, ammo: ws.ammo, reserve: ws.reserve, by: p.id, t0: this.now(), sk: this.skinOf(p, ws.id),
       x: p.x + dir[0] * 0.3, y: p.y + (thrown ? 1.4 : 0.9), z: p.z + dir[2] * 0.3,
       vx: dir[0] * sp + p.vx * 0.5, vy: thrown ? 2.5 : 1.5, vz: dir[2] * sp + p.vz * 0.5, yaw: p.yaw + (Math.random() - 0.5)
     };
@@ -377,8 +451,9 @@ class Room {
     if (this.drops.length > MAX_DROPS) this.drops.shift();
     return d;
   }
+  skinOf(p, wid) { return (p.equip && (p.equip[wid] || p.equip['*'])) || ''; }
   onDropWeapon(p) {
-    if (!p.alive || (p.slot !== 1 && p.slot !== 2)) return;
+    if (!this.mode.buy || !p.alive || (p.slot !== 1 && p.slot !== 2)) return;
     const ws = p.weapons[p.slot];
     if (!ws) return;
     this.spawnDrop(p, ws, true);
@@ -438,7 +513,8 @@ class Room {
     const g = {
       id: nadeCounter++, type, owner: p.id, team: p.team, t0: now,
       x: eye[0] + dir[0] * 0.4, y: eye[1] + dir[1] * 0.4, z: eye[2] + dir[2] * 0.4,
-      vx: dir[0] * sp + p.vx * 0.6, vy: dir[1] * sp + (lob ? 1.5 : 2.2), vz: dir[2] * sp + p.vz * 0.6
+      vx: dir[0] * sp + p.vx * 0.6, vy: dir[1] * sp + (lob ? 1.5 : 2.2), vz: dir[2] * sp + p.vz * 0.6,
+      stick: type === 'breach'
     };
     if (this.world.isSolid(Math.floor(g.x), Math.floor(g.y), Math.floor(g.z))) { g.x = eye[0]; g.y = eye[1]; g.z = eye[2]; }
     this.nades.push(g);
@@ -458,11 +534,38 @@ class Room {
       if (g.type === 'he') det = age >= GN.he.fuse;
       else if (g.type === 'flash') det = age >= GN.flash.fuse;
       else if (g.type === 'smoke') det = (g.rest && age >= GN.smoke.minFuse) || age >= GN.smoke.maxFuse;
+      else if (g.type === 'molotov') det = g.landed || age >= GN.molotov.maxFuse;
+      else if (g.type === 'breach') det = (g.stuck && age >= GN.breach.fuse) || age >= GN.breach.fuse + 2;
       if (!det) continue;
       this.nades.splice(i, 1);
       this.detonate(g, now);
     }
     this.smokes = this.smokes.filter((s) => now - s.t0 < GN.smoke.duration * 1000);
+    this.updateFires(now);
+  }
+
+  /** burning molotov areas: damage over time, smoke puts them out */
+  updateFires(now) {
+    if (!this.fires.length) return;
+    const cfg = GN.molotov;
+    for (let i = this.fires.length - 1; i >= 0; i--) {
+      const f = this.fires[i];
+      const smoked = this.smokes.some((s) => now - s.t0 > 500 && Math.hypot(s.x - f.x, s.z - f.z) < cfg.radius + GN.smoke.radius * 0.6);
+      if (now - f.t0 > cfg.duration * 1000 || smoked) {
+        this.fires.splice(i, 1);
+        if (smoked) this.io.to(this.id).emit('nade', { e: 'fireout', x: r2(f.x), y: r2(f.y), z: r2(f.z), id: f.id });
+        continue;
+      }
+      if (now - f.lastDmg < FIRE_TICK_MS) continue;
+      f.lastDmg = now;
+      const owner = this.players.get(f.owner) || null;
+      for (const q of this.players.values()) {
+        if (!q.alive || Math.abs(q.y - f.y) > 1.6 || Math.hypot(q.x - f.x, q.z - f.z) > cfg.radius) continue;
+        if (owner && q !== owner && q.team === owner.team && !CONFIG.FRIENDLY_FIRE) continue;
+        const r = this.dealDamage(q, owner, cfg.dps * FIRE_TICK_MS / 1000, 'legs', 'molotov');
+        if (owner && owner.socket && q !== owner && r.dealt > 0 && r.killed) owner.socket.emit('hitc', { d: r.dealt, hs: 0, k: 1 });
+      }
+    }
   }
 
   detonate(g, now) {
@@ -507,6 +610,34 @@ class Room {
       }
     } else if (g.type === 'smoke') {
       this.smokes.push({ id: g.id, x: pos[0], y: pos[1] + 0.8, z: pos[2], t0: now });
+      // smoke grenades extinguish fires they land in
+    } else if (g.type === 'molotov') {
+      // find the floor under the burst point
+      let fy = Math.floor(pos[1]);
+      while (fy > 1 && !this.world.isSolid(Math.floor(pos[0]), fy - 1, Math.floor(pos[2]))) fy--;
+      const inSmoke = this.smokes.some((s) => now - s.t0 > 500 && Math.hypot(s.x - pos[0], s.z - pos[2]) < GN.smoke.radius);
+      if (inSmoke) { this.io.to(this.id).emit('nade', { e: 'fireout', x: r2(pos[0]), y: fy, z: r2(pos[2]), id: g.id }); return; }
+      this.fires.push({ id: fireCounter++, x: pos[0], y: fy, z: pos[2], t0: now, owner: g.owner, lastDmg: 0 });
+    } else if (g.type === 'breach') {
+      const cfg = GN.breach;
+      for (const q of this.players.values()) {
+        if (!q.alive) continue;
+        if (owner && q !== owner && q.team === owner.team && !CONFIG.FRIENDLY_FIRE) continue;
+        const chest = [q.x, q.y + 1.1, q.z];
+        const d = Math.hypot(chest[0] - pos[0], chest[1] - pos[1], chest[2] - pos[2]);
+        if (d > cfg.radius || (d > 1.6 && !S.lineClear(this.world, pos, chest))) continue;
+        let dmg = cfg.damage * Math.pow(1 - d / cfg.radius, 1.1);
+        if (q.armor > 0) { q.armor = Math.max(0, Math.round(q.armor - dmg * 0.2)); dmg *= 0.6; }
+        if (dmg < 1) continue;
+        const r = this.dealDamage(q, owner, dmg, 'chest', 'breach');
+        if (owner && owner.socket && q !== owner && r.dealt > 0) owner.socket.emit('hitc', { d: Math.round(r.dealt), hs: 0, k: r.killed ? 1 : 0 });
+      }
+      // blows a hole through walls (even "indestructible" ones) — never the floor or the map border
+      const rr = cfg.blockRadius;
+      for (let y = Math.floor(pos[1] - rr); y <= pos[1] + rr; y++)
+        for (let z = Math.floor(pos[2] - rr); z <= pos[2] + rr; z++)
+          for (let x = Math.floor(pos[0] - rr); x <= pos[0] + rr; x++)
+            if (Math.hypot(x + 0.5 - pos[0], (y + 0.5 - pos[1]) * 0.85, z + 0.5 - pos[2]) <= rr) this.damageBlock(x, y, z, 9999, true);
     }
   }
 
@@ -573,11 +704,19 @@ class Room {
     return { end: [eye[0] + dir[0] * tEnd, eye[1] + dir[1] * tEnd, eye[2] + dir[2] * tEnd], normal: stopNormal, blockType: stopType, hitPlayer: false };
   }
 
-  damageBlock(x, y, z, amount) {
+  damageBlock(x, y, z, amount, force) {
     if (y <= 0) return;   // never open holes in the floor
     const type = this.world.get(x, y, z);
     const info = BLOCK_INFO[type];
-    if (!info || info.hp <= 0) return;
+    if (!info || type === BLOCK.AIR) return;
+    if (info.hp <= 0) {
+      // only breach charges remove solid walls, and never the outer border of the map
+      if (!force || x <= 0 || z <= 0 || x >= this.world.sx - 1 || z >= this.world.sz - 1) return;
+      this.world.set(x, y, z, BLOCK.AIR);
+      this.pendingBlocks.push([x, y, z, BLOCK.AIR, type]);
+      this.navDirty = true;
+      return;
+    }
     const key = x + ',' + y + ',' + z;
     const hp = (this.blockHp.has(key) ? this.blockHp.get(key) : info.hp) - amount;
     if (hp <= 0) {
@@ -592,10 +731,11 @@ class Room {
   dealDamage(victim, attacker, rawDmg, part, weaponId) {
     if (!victim.alive) return { dealt: 0, killed: false };
     if (attacker && attacker !== victim && attacker.team === victim.team && !CONFIG.FRIENDLY_FIRE) return { dealt: 0, killed: false };
+    if (victim.protectUntil > this.now() && attacker !== victim) return { dealt: 0, killed: false };
     if (attacker && attacker.isBot && !victim.isBot) rawDmg *= this.diff.botDamageMul;
     const w = WEAPONS[weaponId] || { armorPen: 1 };
     let health = rawDmg;
-    if (weaponId !== 'he') {
+    if (weaponId !== 'he' && weaponId !== 'breach' && weaponId !== 'molotov') {
       const armored = victim.armor > 0 && (part === 'chest' || (part === 'head' && victim.helmet));
       if (armored) {
         health = rawDmg * w.armorPen;
@@ -635,8 +775,10 @@ class Room {
     victim.deaths++;
     victim.scoped = 0;
     this.dropBombIfCarrier(victim);
-    victim.respawnAt = this.now() + R.WARMUP_RESPAWN * 1000;
+    const hadHelmet = victim.helmet;
+    victim.respawnAt = this.now() + (this.mode.respawn && this.phase === 'live' ? RESPAWN_MS : R.WARMUP_RESPAWN * 1000);
     const warm = this.phase === 'warmup';
+    let ggUp = false;
     if (killer && killer !== victim) {
       if (killer.team === victim.team) {
         killer.kills--;
@@ -645,7 +787,11 @@ class Room {
         killer.kills++;
         killer.roundKills++;
         const reward = (WEAPONS[weaponId] || WEAPONS.knife).killReward;
-        if (!warm) killer.money = Math.min(E.MAX, killer.money + reward);
+        if (!warm && this.mode.buy) killer.money = Math.min(E.MAX, killer.money + reward);
+        if (this.mode.respawn && this.phase === 'live') {
+          this.score[killer.team]++;
+          if (this.mode.ladder) ggUp = true;
+        }
       }
     }
     for (const [aid, dmg] of victim.dmgBy) {
@@ -654,15 +800,35 @@ class Room {
       if (a && dmg >= 41 && a.team !== victim.team) a.assists++;
     }
     const best = victim.weapons[1] || victim.weapons[2];
-    if (best) this.spawnDrop(victim, best, false);
+    if (best && this.mode.buy) this.spawnDrop(victim, best, false);
     victim.weapons = { 1: null, 2: null, 3: { id: 'knife', ammo: 0, reserve: 0 } };
-    victim.nades = { he: 0, flash: 0, smoke: 0 };
+    victim.nades = emptyNades();
     victim.armor = 0; victim.helmet = false; victim.kit = false;
     victim.needsDefaults = true;
     this.io.to(this.id).emit('kill', {
       k: killer ? killer.id : null, kn: killer ? killer.name : '', kt: killer ? killer.team : '',
-      v: victim.id, vn: victim.name, vt: victim.team, w: weaponId, hs: headshot ? 1 : 0
+      v: victim.id, vn: victim.name, vt: victim.team, w: weaponId, hs: headshot ? 1 : 0,
+      kh: killer && killer !== victim ? Math.max(0, killer.hp) : 0, hm: headshot && hadHelmet ? 1 : 0,
+      kx: killer ? r2(killer.x) : null, kz: killer ? r2(killer.z) : null
     });
+    if (ggUp) this.gunGameAdvance(killer, victim, weaponId);
+  }
+
+  /** gun game: every kill = next weapon; knife kill also demotes the victim */
+  gunGameAdvance(killer, victim, weaponId) {
+    const L = this.mode.ladder;
+    if (weaponId === 'knife' && victim.gg > 0 && L[killer.gg] !== 'knife') { victim.gg--; if (victim.socket) victim.socket.emit('msg', { text: 'Bıçaklandın — bir silah geri düştün!' }); }
+    killer.gg++;
+    if (killer.gg >= L.length) {
+      this.endMatch(killer.team, { n: killer.name, txt: `${killer.name} SİLAH OYUNUNU BİTİRDİ!` });
+      return;
+    }
+    const keepNades = killer.nades;
+    this.giveDefaults(killer);
+    killer.nades = keepNades;
+    this.switchSlot(killer, killer.slot, true);
+    if (killer.socket) killer.socket.emit('ggup', { lv: killer.gg, w: L[killer.gg], of: L.length });
+    if (L[killer.gg] === 'knife') this.broadcastMsg(`⚠ ${killer.name} son silahta: BIÇAK!`);
   }
 
   dropBombIfCarrier(p) {
@@ -682,6 +848,7 @@ class Room {
     this.nades = [];
     this.smokes = [];
     this.drops = [];
+    this.fires = [];
     this.nav = S.buildNav(this.world);
     this.navVersion++;
     this.io.to(this.id).emit('wreset', { map: this.mapId });
@@ -702,17 +869,37 @@ class Room {
   // -------------------------------------------------------------------------
   // ROUND FLOW
   // -------------------------------------------------------------------------
+  matchRunning() {
+    return (this.phase === 'freeze' || this.phase === 'live' || this.phase === 'post') && (this.round >= 1 || this.mode.respawn);
+  }
+
   startMatch() {
     this.round = 0;
     this.score = { T: 0, CT: 0 };
     this.lossStreak = { T: 0, CT: 0 };
+    const M = this.mode;
     for (const p of this.players.values()) {
       p.kills = p.deaths = p.assists = p.mvps = p.damageDealt = p.headshots = 0;
+      p.roundsWon = 0; p.gg = 0; p.recorded = false; p.dmLoad = {};
       p.money = this.diff.startMoney;
       p.alive = false;
       this.giveDefaults(p);
     }
-    this.broadcastMsg(`MAÇ BAŞLIYOR · ${this.map.name} · ${this.diff.label} · İlk 13 raunt kazanan takım galip gelir.`);
+    if (M.respawn) {
+      const goal = M.killLimit ? `${M.killLimit} leşe ilk ulaşan takım kazanır` : `${M.ladder.length} silahı ilk bitiren kazanır`;
+      this.broadcastMsg(`${M.label} BAŞLIYOR · ${this.map.name} · ${goal}`);
+      this.resetWorld();
+      this.bomb = { state: 'none' };
+      this.phase = 'live';
+      this.roundStart = this.now();
+      this.phaseEnd = this.now() + M.timeLimit * 1000;
+      for (const p of this.players.values()) if (p.team === 'T' || p.team === 'CT') { this.giveDefaults(p); this.spawn(p, -1); }
+      for (const b of this.bots.values()) b.onRoundStart();
+      this.io.to(this.id).emit('rstart', { rd: 0, carrier: null, mode: M.id });
+      this.io.to(this.id).emit('live', {});
+      return;
+    }
+    this.broadcastMsg(`MAÇ BAŞLIYOR · ${M.label} · ${this.map.name} · ${this.diff.label} · İlk ${M.win} raunt kazanan takım galip gelir.`);
     this.startRound();
   }
 
@@ -720,11 +907,15 @@ class Room {
     this.round++;
     this.resetWorld();
     const now = this.now();
+    const M = this.mode;
+    if (M.loadout === 'duel') this.duelSet = M.sets[(this.round - 1) % M.sets.length];
+    this.clutch = {};
     let ti = 0, ci = 0;
     for (const p of this.players.values()) {
       p.roundKills = 0;
       if (p.team !== 'T' && p.team !== 'CT') continue;
-      if (!p.alive || p.needsDefaults) {
+      if (M.loadout) { this.giveDefaults(p); p.needsDefaults = false; }
+      else if (!p.alive || p.needsDefaults) {
         const keepMoney = p.money;
         this.giveDefaults(p);
         p.money = keepMoney;
@@ -737,7 +928,7 @@ class Room {
         if (ws && WEAPONS[ws.id]) { ws.ammo = WEAPONS[ws.id].mag; ws.reserve = WEAPONS[ws.id].reserve; }
       }
       p.reloadEnd = 0;
-      if (!p.weapons[2]) {
+      if (!p.weapons[2] && !M.loadout) {
         const pistol = p.team === 'CT' ? 'p12' : 'p9';
         p.weapons[2] = { id: pistol, ammo: WEAPONS[pistol].mag, reserve: WEAPONS[pistol].reserve };
       }
@@ -745,7 +936,7 @@ class Room {
     const ts = [...this.players.values()].filter((p) => p.team === 'T' && p.alive);
     const humansT = ts.filter((p) => !p.isBot);
     const pool = humansT.length ? humansT : ts;
-    const carrier = pool[Math.floor(Math.random() * pool.length)];
+    const carrier = M.bomb ? pool[Math.floor(Math.random() * pool.length)] : null;
     this.bomb = carrier ? { state: 'carried', carrier: carrier.id } : { state: 'none' };
     this.botPlan = { site: Math.random() < 0.5 ? 'A' : 'B' };
     this.phase = 'freeze';
@@ -753,7 +944,7 @@ class Room {
     this.phaseEnd = now + R.FREEZE * 1000;
     this.buyEnd = now + (R.FREEZE + R.BUY_WINDOW) * 1000;
     for (const b of this.bots.values()) b.onRoundStart();
-    this.io.to(this.id).emit('rstart', { rd: this.round, carrier: carrier ? carrier.id : null });
+    this.io.to(this.id).emit('rstart', { rd: this.round, carrier: carrier ? carrier.id : null, mode: M.id, set: this.duelSet || null });
   }
 
   endRound(winner, reason) {
@@ -772,6 +963,7 @@ class Room {
     let mvp = null;
     for (const p of this.players.values()) {
       if (p.team === winner) {
+        p.roundsWon++;
         p.money = Math.min(E.MAX, p.money + winMoney);
         if (!mvp || p.roundKills > mvp.roundKills) mvp = p;
       } else if (p.team === loser) {
@@ -784,23 +976,29 @@ class Room {
     if (mvp) mvp.mvps++;
     this.phase = 'post';
     this.phaseEnd = now + R.POST * 1000;
-    this.io.to(this.id).emit('rend', { w: winner, r: reason, sc: this.score, mvp: mvp ? mvp.name : null });
+    this.io.to(this.id).emit('rend', { w: winner, r: reason, sc: this.score, mvp: mvp ? mvp.name : null, hl: this.roundHighlight(winner) });
+  }
+
+  /** "play of the round": clutches and multi-kills */
+  roundHighlight(winner) {
+    const c = this.clutch[winner];
+    if (c) { const p = this.players.get(c.id); if (p && p.alive) return { n: p.name, t: p.team, txt: `1v${c.vs} CLUTCH`, k: p.roundKills }; }
+    let best = null;
+    for (const p of this.players.values()) if (p.roundKills >= 3 && (!best || p.roundKills > best.roundKills)) best = p;
+    if (!best) return null;
+    const txt = best.roundKills >= this.perTeam && this.perTeam >= 5 ? 'ACE!' : best.roundKills + ' LEŞ';
+    return { n: best.name, t: best.team, txt, k: best.roundKills };
   }
 
   afterPost() {
     const total = this.score.T + this.score.CT;
-    if (this.score.T >= R.WIN || this.score.CT >= R.WIN || total >= R.MAX_ROUNDS) {
+    const M = this.mode;
+    if (this.score.T >= M.win || this.score.CT >= M.win || total >= M.maxRounds) {
       const winner = this.score.T > this.score.CT ? 'T' : this.score.CT > this.score.T ? 'CT' : 'DRAW';
-      this.phase = 'gameover';
-      this.phaseEnd = this.now() + R.GAMEOVER * 1000;
-      const next = S.nextMapId(this.mapId);
-      const stats = [...this.players.values()].filter((p) => p.team !== 'SPEC').map((p) => ({
-        n: p.name, t: p.team, k: p.kills, d: p.deaths, a: p.assists, mv: p.mvps, dmg: p.damageDealt, hs: p.headshots, bt: p.isBot ? 1 : 0
-      }));
-      this.io.to(this.id).emit('over', { w: winner, sc: this.score, next, nextName: S.getMap(next).name, stats });
+      this.endMatch(winner, null);
       return;
     }
-    if (total === R.HALF) {
+    if (M.half && total === M.half) {
       for (const p of this.players.values()) {
         if (p.team === 'T') p.team = 'CT'; else if (p.team === 'CT') p.team = 'T';
         p.money = this.diff.startMoney;
@@ -813,6 +1011,60 @@ class Room {
       this.broadcastMsg('DEVRE ARASI — Takımlar taraf değiştirdi!');
     }
     this.startRound();
+  }
+
+  /** end of the whole match: stats, map vote, persistent rewards */
+  endMatch(winner, hl) {
+    this.phase = 'gameover';
+    this.phaseEnd = this.now() + R.GAMEOVER * 1000;
+    for (const p of this.players.values()) { p.planting = 0; p.defusing = 0; }
+    const next = S.nextMapId(this.mapId);
+    const others = S.MAP_ORDER.filter((id) => id !== next && id !== this.mapId).sort(() => Math.random() - 0.5);
+    this.voteOpts = [next].concat(others.slice(0, 2));
+    if (this.voteOpts.length < 3 && !this.voteOpts.includes(this.mapId)) this.voteOpts.push(this.mapId);
+    this.votes = new Map();
+    const stats = [...this.players.values()].filter((p) => p.team !== 'SPEC').map((p) => ({
+      n: p.name, t: p.team, k: p.kills, d: p.deaths, a: p.assists, mv: p.mvps, dmg: p.damageDealt, hs: p.headshots, bt: p.isBot ? 1 : 0,
+      gg: this.mode.ladder ? p.gg : undefined, lv: p.level || undefined
+    }));
+    this.io.to(this.id).emit('over', {
+      w: winner, sc: this.score, next, nextName: S.getMap(next).name, stats, mode: this.mode.id, hl: hl || null,
+      vote: this.voteOpts.map((id) => [id, S.getMap(id).name])
+    });
+    for (const p of this.players.values()) {
+      if (p.isBot || !p.acct || p.recorded || (p.team !== 'T' && p.team !== 'CT')) continue;
+      this.recordFor(p, winner === 'DRAW' ? 'draw' : winner === p.team ? 'win' : 'loss');
+    }
+  }
+
+  recordFor(p, result) {
+    if (!this.store || p.recorded) return;
+    p.recorded = true;
+    const other = p.team === 'T' ? 'CT' : 'T';
+    const res = this.store.recordMatch(p.acct, {
+      result, mode: this.mode.id, ranked: !!this.mode.ranked, map: this.mapId,
+      kills: Math.max(0, p.kills), deaths: p.deaths, assists: p.assists, hs: p.headshots, mvps: p.mvps, dmg: p.damageDealt,
+      roundsWon: p.roundsWon, score: [this.score[p.team] || 0, this.score[other] || 0]
+    });
+    if (res && p.socket && result !== 'abandon') p.socket.emit('progress', res);
+    if (res) { p.level = res.level; }
+  }
+
+  onVote(p, mapId) {
+    if (this.phase !== 'gameover' || !this.voteOpts || !this.voteOpts.includes(mapId)) return;
+    this.votes.set(p.id, mapId);
+    const tally = {};
+    for (const id of this.voteOpts) tally[id] = 0;
+    for (const v of this.votes.values()) tally[v]++;
+    this.io.to(this.id).emit('votes', tally);
+  }
+  votedMap() {
+    if (!this.voteOpts) return S.nextMapId(this.mapId);
+    const tally = new Map(this.voteOpts.map((id) => [id, 0]));
+    for (const v of this.votes.values()) tally.set(v, (tally.get(v) || 0) + 1);
+    let best = this.voteOpts[0], n = -1;
+    for (const [id, c] of tally) if (c > n) { n = c; best = id; }
+    return best;
   }
 
   plantBomb(p, site) {
@@ -867,11 +1119,12 @@ class Room {
       case 'freeze':
         if (now >= this.phaseEnd) {
           this.phase = 'live';
-          this.phaseEnd = now + R.LIVE * 1000;
+          this.phaseEnd = now + (this.mode.live || R.LIVE) * 1000;
           this.io.to(this.id).emit('live', {});
         }
         break;
       case 'live':
+        if (this.mode.respawn) { this.updateRespawnMode(now); break; }
         this.updateBomb(now);
         if (this.phase !== 'live') break;
         this.checkRoundEnd(now);
@@ -882,7 +1135,8 @@ class Room {
         break;
       case 'gameover':
         if (now >= this.phaseEnd) {
-          this.loadMap(S.nextMapId(this.mapId));
+          this.loadMap(this.votedMap());
+          this.voteOpts = null; this.votes = new Map(); this.fires = [];
           this.phase = 'warmup';
           this.phaseEnd = 0;
           this.round = 0;
@@ -890,9 +1144,33 @@ class Room {
           this.bomb = { state: 'none' };
           this.nades = []; this.smokes = [];
           this.io.to(this.id).emit('wreset', { map: this.mapId });
-          for (const p of this.players.values()) { p.alive = false; p.respawnAt = 0; p.kills = p.deaths = p.assists = p.mvps = 0; }
+          for (const p of this.players.values()) { p.alive = false; p.respawnAt = 0; p.kills = p.deaths = p.assists = p.mvps = 0; p.gg = 0; p.recorded = false; }
         }
         break;
+    }
+  }
+
+  updateRespawnMode(now) {
+    const M = this.mode;
+    for (const p of this.players.values()) {
+      if ((p.team === 'T' || p.team === 'CT') && !p.alive && now >= p.respawnAt) {
+        this.giveDefaults(p);
+        this.spawn(p, -1);
+      }
+    }
+    if (M.killLimit && (this.score.T >= M.killLimit || this.score.CT >= M.killLimit)) {
+      return this.endMatch(this.score.T >= M.killLimit ? 'T' : 'CT', null);
+    }
+    if (now >= this.phaseEnd) {
+      let winner;
+      if (M.ladder) {
+        let lead = null;
+        for (const p of this.players.values()) if ((p.team === 'T' || p.team === 'CT') && (!lead || p.gg > lead.gg || (p.gg === lead.gg && p.kills > lead.kills))) lead = p;
+        winner = lead ? lead.team : 'DRAW';
+        return this.endMatch(winner, lead ? { n: lead.name, txt: `${lead.name} en ileri silahta (${lead.gg + 1}/${M.ladder.length})` } : null);
+      }
+      winner = this.score.T > this.score.CT ? 'T' : this.score.CT > this.score.T ? 'CT' : 'DRAW';
+      this.endMatch(winner, null);
     }
   }
 
@@ -952,6 +1230,24 @@ class Room {
     const tCount = this.teamCount('T'), ctCount = this.teamCount('CT');
     const tAlive = this.aliveCount('T'), ctAlive = this.aliveCount('CT');
     const planted = this.bomb.state === 'planted';
+    // clutch tracking: last player alive against 2+
+    for (const [team, mine, theirs] of [['T', tAlive, ctAlive], ['CT', ctAlive, tAlive]]) {
+      if (mine === 1 && theirs >= 2 && !this.clutch[team]) {
+        const last = [...this.players.values()].find((p) => p.team === team && p.alive);
+        if (last) this.clutch[team] = { id: last.id, vs: theirs };
+      }
+    }
+    if (!this.mode.bomb) {
+      if (tCount > 0 && tAlive === 0 && ctAlive > 0) return this.endRound('CT', 'elim');
+      if (ctCount > 0 && ctAlive === 0 && tAlive > 0) return this.endRound('T', 'elim');
+      if (tAlive === 0 && ctAlive === 0) return this.endRound(Math.random() < 0.5 ? 'T' : 'CT', 'elim');
+      if (now >= this.phaseEnd) {
+        let hpT = 0, hpCT = 0;
+        for (const p of this.players.values()) if (p.alive) { if (p.team === 'T') hpT += p.hp; else if (p.team === 'CT') hpCT += p.hp; }
+        return this.endRound(tAlive > ctAlive || (tAlive === ctAlive && hpT > hpCT) ? 'T' : 'CT', 'time');
+      }
+      return;
+    }
     if (ctCount > 0 && ctAlive === 0) return this.endRound('T', 'elim');
     if (ctCount === 0) return this.endRound('T', 'elim');
     if (!planted && (tCount === 0 || tAlive === 0)) return this.endRound('CT', 'elim');
@@ -1053,7 +1349,9 @@ class Room {
     return [...this.players.values()].map((p) => ({
       i: p.id, n: p.name, t: p.team, k: p.kills, d: p.deaths, a: p.assists, mv: p.mvps,
       m: p.money, pg: p.isBot ? 0 : p.ping, bt: p.isBot ? 1 : 0, al: p.alive ? 1 : 0, nu: p.num,
-      ar: p.armor > 0 ? (p.helmet ? 2 : 1) : 0, wp: p.alive ? this.currentWeaponId(p) : ''
+      ar: p.armor > 0 ? (p.helmet ? 2 : 1) : 0, wp: p.alive ? this.currentWeaponId(p) : '',
+      sk: p.equip && Object.keys(p.equip).length ? p.equip : undefined, ac: p.acct || undefined, lv: p.level || undefined,
+      rk: this.mode.ranked && p.rankId ? p.rankId : undefined, gg: this.mode.ladder ? p.gg : undefined
     }));
   }
 
@@ -1066,11 +1364,13 @@ class Room {
       s: p.lastSeq, x: r3(p.x), y: r3(p.y), z: r3(p.z), vx: r3(p.vx), vy: r3(p.vy), vz: r3(p.vz),
       og: p.onGround ? 1 : 0, c: p.crouch ? 1 : 0, a: p.alive ? 1 : 0, tm: p.team,
       hp: Math.max(0, p.hp), ar: p.armor, hm: p.helmet ? 1 : 0, kt: p.kit ? 1 : 0, m: p.money,
-      sl: p.slot, wp, nd: [p.nades.he, p.nades.flash, p.nades.smoke],
+      sl: p.slot, wp, nd: GRENADE_ORDER.map((k) => p.nades[k] || 0),
       rl: p.reloadEnd ? Math.max(0, p.reloadEnd - now) : 0, dr: Math.max(0, p.drawEnd - now),
       ss: p.lastShotSeq, sc: p.scoped, cb: this.canBuy(p) ? 1 : 0
     };
     if (p.planting) y.pl = r3(Math.min(1, (now - p.planting) / (BB.PLANT * 1000)));
+    if (this.mode.ladder) y.gg = p.gg;
+    if (p.protectUntil > now) y.pr = 1;
     if (p.forceSync) { y.fs = 1; y.yw = r3(p.yaw); y.pt = r3(p.pitch); p.forceSync = false; }
     return y;
   }
@@ -1090,7 +1390,8 @@ class Room {
       b: this.bombPublic(now), p: pubs
     };
     if (this.nades.length) base.g = this.nades.map((g) => [g.id, g.type, r2(g.x), r2(g.y), r2(g.z)]);
-    if (this.drops.length) base.d = this.drops.map((d) => [d.id, d.wid, r2(d.x), r2(d.y), r2(d.z), r2(d.yaw)]);
+    if (this.drops.length) base.d = this.drops.map((d) => [d.id, d.wid, r2(d.x), r2(d.y), r2(d.z), r2(d.yaw), d.sk || '']);
+    if (this.fires.length) base.f = this.fires.map((f) => [f.id, r2(f.x), f.y, r2(f.z), f.t0]);
     if (this.smokes.length) base.sm = this.smokes.map((s) => [s.id, r2(s.x), r2(s.y), r2(s.z), s.t0]);
     if (this.tickCount % 15 === 1) base.r = this.roster();
     for (const p of this.players.values()) {
@@ -1110,7 +1411,7 @@ class Room {
   initPayload(p) {
     return {
       id: p.id, num: p.num, room: this.id, t: this.now(), blocks: this.worldDiff(), roster: this.roster(),
-      version: CONFIG.VERSION, map: this.mapId, difficulty: this.diff.id
+      version: CONFIG.VERSION, map: this.mapId, difficulty: this.diff.id, mode: this.mode.id
     };
   }
 }

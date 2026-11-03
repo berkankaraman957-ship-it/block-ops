@@ -434,3 +434,144 @@ body.touch #voiceBox { top: calc(170px + var(--safe-t)); }
 .sp-bar i { display: block; height: 100%; width: 4%; background: linear-gradient(90deg, #d4861c, #ffd36b); box-shadow: 0 0 14px #f0a640; transition: width .3s ease; }
 .sp-status { display: flex; justify-content: space-between; margin-top: 6px; font: 800 10.5px var(--font); letter-spacing: .25em; color: #8d99a6; }
 @media (max-height: 460px) { .sp-teams { display: none; } .sp-center { top: 40%; } }
+
+/* ============================================================
+   v3.0 — modes, profile, store, party, killcam, highlights, vote
+   ============================================================ */
+.mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.mode-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 6px; background: rgba(255,255,255,.04); }
+.mode-btn .mi { font-size: 20px; line-height: 1; }
+.mode-btn b { font-size: 12px; letter-spacing: .06em; }
+.mode-btn small { font-size: 10px; }
+.mode-btn.on { background: rgba(240,166,64,.16); border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc) inset; }
+.mode-btn.ranked.on { background: rgba(255,200,58,.14); border-color: #ffc83a; }
+@media (max-width: 700px) { .mode-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* player card in the side menu */
+.player-card { display: flex; align-items: center; gap: 10px; padding: 9px 10px; margin-bottom: 12px; border-radius: 8px;
+  background: linear-gradient(135deg, rgba(240,166,64,.12), rgba(95,176,255,.08)); border: 1px solid var(--line2); }
+.pc-lv { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; font: 900 17px var(--font);
+  background: linear-gradient(180deg, #f6b24c, #b8700f); color: #1a1206; flex: none; }
+.pc-main { flex: 1; min-width: 0; }
+.pc-main b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-main small { font-size: 10.5px; }
+.pc-xp, .xpbar { height: 5px; background: rgba(255,255,255,.1); border-radius: 3px; overflow: hidden; margin: 4px 0 3px; }
+.pc-xp i, .xpbar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #f6b24c, #ffe08a); transition: width .6s; }
+.pc-coin { font: 800 13px var(--font); color: #7fe3ff; flex: none; }
+.badge.coin { background: #123a4a; color: #7fe3ff; }
+
+/* profile */
+.prof-head { display: flex; align-items: center; gap: 16px; margin: 4px 0 14px; }
+.prof-lv { width: 70px; height: 70px; border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, #f6b24c, #b8700f); color: #1a1206; flex: none; box-shadow: 0 8px 24px rgba(240,166,64,.25); }
+.prof-lv span { font: 900 28px var(--font); line-height: 1; } .prof-lv small { color: #3a2608; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.prof-main { flex: 1; min-width: 0; }
+.prof-name { font: 800 22px var(--font); letter-spacing: .03em; }
+.xpbar { height: 9px; }
+.prof-rank { text-align: center; padding: 8px 14px; border-radius: 10px; background: rgba(255,255,255,.04); border: 1px solid var(--line); min-width: 110px; }
+.prof-rank .ri { font-size: 28px; line-height: 1.1; }
+.prof-rank b { display: block; font-size: 14px; } .prof-rank small { font-size: 10.5px; }
+.stat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.stat-grid div { background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 8px; padding: 9px 8px; text-align: center; }
+.stat-grid small { display: block; font-size: 9.5px; letter-spacing: .1em; font-weight: 700; }
+.stat-grid b { font-size: 16px; }
+@media (max-width: 700px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } .prof-head { flex-wrap: wrap; } }
+.history { display: flex; flex-direction: column; gap: 6px; }
+.hrow { display: grid; grid-template-columns: 30px 1fr 54px 76px 120px; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 7px;
+  background: rgba(255,255,255,.035); border-left: 3px solid var(--mut); font-size: 13px; }
+.hrow.win { border-left-color: var(--ok); } .hrow.loss { border-left-color: var(--bad); }
+.hrow .res { font-weight: 900; text-align: center; }
+.hrow.win .res { color: var(--ok); } .hrow.loss .res { color: var(--bad); }
+.hrow small { display: block; font-size: 10.5px; }
+.hrow .hs { font-weight: 800; text-align: center; } .hrow .hk { text-align: center; font-weight: 700; } .hrow .hx { text-align: right; color: #ffe08a; font-size: 12px; }
+@media (max-width: 700px) { .hrow { grid-template-columns: 26px 1fr 48px 70px; } .hrow .hx { display: none; } }
+.keybox { font: 600 13px ui-monospace, Consolas, monospace; background: #0b1016; border: 1px dashed var(--line2); padding: 9px 11px; border-radius: 6px;
+  word-break: break-all; user-select: text; -webkit-user-select: text; margin: 6px 0; }
+button.mini { padding: 4px 9px; font-size: 10.5px; }
+
+/* store */
+.store-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.wallet { text-align: right; padding: 8px 14px; border-radius: 10px; background: #0d2633; border: 1px solid #1d5066; flex: none; }
+.wallet b { font: 900 22px var(--font); color: #7fe3ff; margin-left: 4px; } .wallet small { display: block; font-size: 9.5px; letter-spacing: .14em; }
+.coin-ico { color: #7fe3ff; }
+.store-weapon { display: grid; grid-template-columns: 1fr 360px; gap: 12px; align-items: center; margin: 12px 0 10px; }
+#storePreview { width: 100%; max-width: 360px; height: auto; background: radial-gradient(ellipse at center, rgba(255,255,255,.07), transparent 70%); border-radius: 10px; }
+@media (max-width: 760px) { .store-weapon { grid-template-columns: 1fr; } }
+.seg.small { grid-template-columns: repeat(6, auto); justify-content: start; margin-bottom: 10px; }
+.seg.small button { padding: 6px 10px; font-size: 10.5px; }
+.seg.small button.on { background: rgba(240,166,64,.18); border-color: var(--acc); }
+.skin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.skin-card { position: relative; border-radius: 9px; padding: 8px; background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(0,0,0,.15));
+  border: 1px solid var(--line); border-bottom: 3px solid var(--rar, var(--mut)); cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+.skin-card:hover { border-color: var(--line2); transform: translateY(-1px); }
+.skin-card.eq { box-shadow: 0 0 0 2px var(--acc) inset; }
+.skin-card canvas { width: 100%; height: auto; display: block; }
+.skin-card .meta b { display: block; font-size: 12.5px; } .skin-card .meta small { font-size: 9.5px; font-weight: 800; letter-spacing: .12em; }
+.skin-card button { padding: 7px; font-size: 11px; }
+.skin-card button.buy { background: #123a4a; color: #7fe3ff; border-color: #1d5066; }
+.skin-card button.buy.no { opacity: .55; }
+.skin-card .swatch { height: 40px; border-radius: 6px; border: 1px solid var(--line2); }
+.pack-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.pack { padding: 12px; border-radius: 9px; background: rgba(127,227,255,.06); border: 1px solid #1d5066; text-align: center; }
+.pack .amt { font: 900 17px var(--font); color: #7fe3ff; } .pack .amt small { display: block; color: var(--ok); font-size: 10.5px; }
+.pack .price { margin: 4px 0 8px; font-weight: 700; } .pack button { width: 100%; padding: 6px; font-size: 10.5px; }
+@media (max-width: 700px) { .pack-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* party */
+.party-bar { margin: 8px 0 2px; padding: 8px 10px; border-radius: 7px; background: rgba(107,220,122,.08); border: 1px solid rgba(107,220,122,.3); font-size: 12.5px; }
+.party-box .party-row, .party-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pm { padding: 3px 9px; border-radius: 12px; background: rgba(255,255,255,.07); font-size: 12px; font-weight: 700; }
+.pm.off { opacity: .5; }
+.party-box button { margin-top: 8px; }
+
+/* in-game: highlight card, killcam, gun game, spawn protection */
+#highlight { position: absolute; top: 18%; left: 50%; transform: translate(-50%, -12px) scale(.96); opacity: 0; transition: opacity .25s, transform .25s;
+  text-align: center; padding: 10px 26px; border-radius: 10px; background: linear-gradient(180deg, rgba(20,26,34,.92), rgba(10,14,20,.92));
+  border: 1px solid var(--line2); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+#highlight.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+#highlight small { display: block; font-size: 10px; letter-spacing: .25em; font-weight: 800; color: #ffe08a; }
+#highlight b { display: block; font: 900 28px var(--font); letter-spacing: .06em; }
+#highlight.T b { color: var(--t); } #highlight.CT b { color: var(--ct); }
+#highlight span { font-size: 13px; color: #dfe4ea; }
+#killcamBar { position: absolute; top: calc(70px + var(--safe-t)); left: 50%; transform: translateX(-50%); padding: 9px 16px; border-radius: 7px;
+  background: rgba(120,16,20,.82); border: 1px solid rgba(255,120,120,.4); font-size: 14px; white-space: nowrap; max-width: 94vw; overflow: hidden; text-overflow: ellipsis; }
+#killcamBar .T { color: var(--t); font-weight: 800; } #killcamBar .CT { color: var(--ct); font-weight: 800; }
+#killcamBar small { color: #ffd0d0; margin-left: 6px; }
+#ggBox { position: absolute; top: calc(206px + var(--safe-t)); left: calc(14px + var(--safe-l)); padding: 8px 12px; border-radius: 7px; background: var(--bg2);
+  border: 1px solid var(--line); text-align: center; min-width: 120px; }
+#ggBox b { display: block; font-size: 13px; letter-spacing: .06em; color: #ffe08a; }
+#ggBox img { display: block; width: 110px; height: 40px; margin: 3px auto; }
+#ggBox small { font-size: 10.5px; }
+#protectBar { position: absolute; bottom: calc(160px + var(--safe-b)); left: 50%; transform: translateX(-50%); padding: 5px 14px; border-radius: 14px;
+  background: rgba(107,220,122,.18); border: 1px solid rgba(107,220,122,.5); font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+#weaponBox { cursor: pointer; }
+.lvchip { display: inline-block; min-width: 18px; padding: 0 4px; margin-right: 5px; border-radius: 4px; background: rgba(240,166,64,.2); color: #ffd28a; font-size: 10px; font-weight: 800; text-align: center; }
+
+/* end screen: rewards + vote */
+#endHl { margin-top: 10px; font: 800 16px var(--font); color: #ffe08a; min-height: 0; }
+.end-progress { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 12px 0 2px; }
+.end-progress span { padding: 6px 12px; border-radius: 16px; font: 800 14px var(--font); background: rgba(255,255,255,.06); border: 1px solid var(--line2); }
+.end-progress .xp { color: #ffe08a; } .end-progress .coin { color: #7fe3ff; } .end-progress .up { color: var(--ok); } .end-progress .down { color: var(--bad); }
+.end-progress .lvl { color: #1a1206; background: linear-gradient(180deg, #f6b24c, #d4861c); border: none; }
+.vote-h { margin-top: 14px; font-size: 11px; letter-spacing: .2em; font-weight: 800; color: var(--mut); }
+.vote-box { display: flex; justify-content: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.vote-box button { text-transform: none; min-width: 140px; display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.vote-box button.on { background: rgba(240,166,64,.2); border-color: var(--acc); }
+.vote-box .vn { background: rgba(255,255,255,.1); padding: 1px 8px; border-radius: 9px; font-size: 12px; }
+
+/* compact side menu on phones (landscape): small player card, no season tag, tighter tabs */
+@media (max-width: 760px), (max-height: 520px) {
+  .player-card { padding: 6px 7px; gap: 7px; margin-bottom: 6px; }
+  .pc-lv { width: 30px; height: 30px; font-size: 14px; }
+  .pc-main b { font-size: 11.5px; }
+  .pc-main small, .pc-xp { display: none; }
+  .pc-coin { font-size: 11px; }
+  .brand .sub, .brand .season { display: none; }
+  .tabs { margin-top: 8px; gap: 1px; }
+  .tab { padding: 8px 10px; font-size: 11.5px; }
+  .tab .badge { display: none; }
+  .mode-btn { padding: 7px 4px; } .mode-btn .mi { font-size: 16px; }
+  .prof-lv { width: 54px; height: 54px; } .prof-lv span { font-size: 22px; }
+  .stat-grid { grid-template-columns: repeat(5, 1fr); gap: 5px; }
+  .stat-grid b { font-size: 13px; }
+}

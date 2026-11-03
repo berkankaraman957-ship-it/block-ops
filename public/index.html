@@ -48,6 +48,11 @@
   <div id="menu" class="overlay">
     <div class="menu-shell">
       <aside class="menu-side">
+        <div id="playerCard" class="player-card hidden">
+          <div class="pc-lv" id="pcLevel">1</div>
+          <div class="pc-main"><b id="pcName">Oyuncu</b><div class="pc-xp"><i id="pcXp"></i></div><small id="pcSub"></small></div>
+          <div class="pc-coin" id="pcCoins">0</div>
+        </div>
         <div class="brand">
           <div class="logo"><span class="b1">BLOCK</span><span class="b2">OPS</span></div>
           <div class="sub">TACTICAL DRIFT</div>
@@ -55,6 +60,8 @@
         </div>
         <nav class="tabs">
           <button class="tab on" data-tab="play">▶ OYNA</button>
+          <button class="tab" data-tab="profile">🎖 PROFİL</button>
+          <button class="tab" data-tab="store">🛒 MAĞAZA <span id="coinBadge" class="badge coin hidden"></span></button>
           <button class="tab" data-tab="friends">👥 ARKADAŞLAR <span id="friendsOnline" class="badge hidden"></span></button>
           <button class="tab" data-tab="settings">⚙ AYARLAR</button>
           <button class="tab" data-tab="controls">⌨ KONTROLLER</button>
@@ -71,7 +78,11 @@
         <!-- PLAY -->
         <div class="pane on" data-pane="play">
           <div id="gpuWarn" class="gpuwarn hidden"></div>
-          <h3 class="sec">HARİTA</h3>
+          <h3 class="sec">OYUN MODU</h3>
+          <div id="modeBtns" class="mode-grid"></div>
+          <div id="modeDesc" class="diff-desc"></div>
+          <div id="partyBar" class="party-bar hidden"></div>
+          <h3 class="sec">HARİTA <small class="muted">— hızlı oyunda boş bir oda bulunursa onun haritası kullanılır</small></h3>
           <div id="mapCards" class="map-cards"></div>
           <h3 class="sec">ZORLUK</h3>
           <div id="diffBtns" class="seg"></div>
@@ -98,8 +109,55 @@
           <h3 class="sec">ARKADAŞ EKLE</h3>
           <div class="addrow"><input id="inFriend" maxlength="8" placeholder="Arkadaşının kodu (ör. K7QX2MP)" autocomplete="off" spellcheck="false"><button id="btnAddFriend" class="primary">EKLE</button></div>
           <div id="friendErr" class="err"></div>
+          <h3 class="sec">PARTİ</h3>
+          <div id="partyBox" class="party-box"><div class="muted">Bir arkadaşını partiye çağır: sen maça girdiğinde parti üyeleri otomatik olarak aynı odaya gelir.</div></div>
           <h3 class="sec">ARKADAŞLARIN</h3>
           <div id="friendList" class="friend-list"></div>
+        </div>
+
+        <!-- PROFILE -->
+        <div class="pane" data-pane="profile">
+          <div id="profOffline" class="gpuwarn hidden"></div>
+          <div class="prof-head">
+            <div class="prof-lv"><span id="profLevel">1</span><small>SEVİYE</small></div>
+            <div class="prof-main">
+              <div class="prof-name" id="profName">Oyuncu</div>
+              <div class="xpbar"><i id="profXp"></i></div>
+              <div class="muted" id="profXpText">0 / 500 XP</div>
+            </div>
+            <div class="prof-rank" id="profRank"></div>
+          </div>
+          <div class="stat-grid" id="profStats"></div>
+          <h3 class="sec">SON MAÇLAR</h3>
+          <div id="profHistory" class="history"><div class="muted">Henüz maç yok.</div></div>
+          <h3 class="sec">HESAP</h3>
+          <p class="muted">Hesabın bu cihazda otomatik oluşturulur — e-posta/şifre gerekmez. Başka cihazda devam etmek için <b>hesap anahtarını</b> kopyalayıp oraya yapıştır. Anahtarı kimseyle paylaşma.</p>
+          <div class="addrow"><button id="btnShowKey">HESAP ANAHTARINI GÖSTER</button><button id="btnCopyKey" class="hidden">KOPYALA</button></div>
+          <div id="keyBox" class="keybox hidden"></div>
+          <div class="addrow"><input id="inKey" placeholder="Başka cihazdaki hesap anahtarını yapıştır" autocomplete="off" spellcheck="false"><button id="btnUseKey">HESABI YÜKLE</button></div>
+          <div id="keyErr" class="err"></div>
+          <div class="addrow"><button id="btnDeleteAcct" class="danger">HESABIMI SİL</button><a class="muted" href="privacy.html" target="_blank" rel="noopener">Gizlilik Politikası</a></div>
+        </div>
+
+        <!-- STORE -->
+        <div class="pane" data-pane="store">
+          <div class="store-head">
+            <div><h3 class="sec">MAĞAZA</h3><div class="muted">Kaplamalar <b>yalnızca görünümü</b> değiştirir — hasar, isabet, hız veya ses üzerinde hiçbir etkisi yoktur. Adil oyun.</div></div>
+            <div class="wallet"><span class="coin-ico">◆</span><b id="storeCoins">0</b><small>BLOK COIN</small></div>
+          </div>
+          <div id="storeOffline" class="gpuwarn hidden"></div>
+          <div class="store-weapon">
+            <label>KAPLAMA UYGULANACAK SİLAH<select id="storeWeapon"></select></label>
+            <canvas id="storePreview" width="360" height="130"></canvas>
+          </div>
+          <div class="seg small" id="storeFilter"></div>
+          <div id="skinGrid" class="skin-grid"></div>
+          <h3 class="sec">AJAN ROZETLERİ <small class="muted">— omuz arması, gözlük camı, bandana rengi (takım renkleri değişmez)</small></h3>
+          <div id="agentGrid" class="skin-grid agents"></div>
+          <h3 class="sec">BLOK COIN PAKETLERİ</h3>
+          <div id="coinPacks" class="pack-grid"></div>
+          <p class="muted">Şimdilik Blok Coin maç oynayarak kazanılır: her maç +20, her leş +2, galibiyet +40 (maç başı en fazla 120), her seviye atlamada +100. Uygulama mağazası yayını sonrası paket satın alma açılacak.</p>
+          <div id="storeMsg" class="err"></div>
         </div>
 
         <!-- SETTINGS -->
@@ -114,20 +172,25 @@
           <div id="qualityInfo" class="muted"></div>
           <label>Görüş Açısı (FOV) <b id="fovVal"></b><input id="inFov" type="range" min="65" max="105" step="1"></label>
           <label class="check"><input id="inShowFps" type="checkbox"> FPS ve ping göster</label>
+          <label class="check"><input id="inKillcam" type="checkbox"> Ölünce leş kamerası (killcam) göster</label>
           <h3 class="sec">KONTROL</h3>
           <label>Fare Hassasiyeti <b id="sensVal"></b><input id="inSens" type="range" min="0.2" max="4" step="0.05"></label>
           <label>Dokunmatik Hassasiyet <b id="tsensVal"></b><input id="inTSens" type="range" min="0.2" max="3" step="0.05"></label>
+          <label class="check"><input id="inVibrate" type="checkbox"> Titreşim (telefonda vurulunca / leşte)</label>
           <h3 class="sec">DOKUNMATİK DÜZEN</h3>
           <button id="btnLayout">BUTONLARI DÜZENLE</button>
           <p class="muted">Butonları istediğin yere sürükle, boyutunu ayarla. Her cihaz kendi düzenini saklar.</p>
           <h3 class="sec">SES</h3>
           <label>Ses Seviyesi <b id="volVal"></b><input id="inVol" type="range" min="0" max="1" step="0.05"></label>
+          <label>Harita Ortam Sesi <b id="ambVal"></b><input id="inAmb" type="range" min="0" max="1" step="0.05"></label>
           <h3 class="sec">SESLİ SOHBET</h3>
           <label class="check"><input id="inVoice" type="checkbox"> Takım sesli sohbetini aç</label>
           <label>Mikrofon<select id="inVoiceMode"><option value="ptt">Bas-konuş (V tuşu / 🎤 butonu)</option><option value="open">Açık mikrofon</option></select></label>
           <label>Takım arkadaşlarının ses seviyesi <b id="vvolVal"></b><input id="inVVol" type="range" min="0" max="1" step="0.05"></label>
           <h3 class="sec">SUNUCU</h3>
           <label>Sunucu Adresi <small>— boş bırakırsan bu sitenin sunucusu</small><input id="inServer" autocomplete="off" spellcheck="false" placeholder="https://sunucu.ornek.com"></label>
+          <h3 class="sec">HAKKINDA</h3>
+          <p class="muted"><a href="privacy.html" target="_blank" rel="noopener">Gizlilik Politikası</a> · Engellediğin oyuncular: <span id="blockedCount">0</span> <button id="btnClearBlocks" class="mini">TEMİZLE</button></p>
         </div>
 
         <!-- CONTROLS -->
@@ -143,6 +206,7 @@
             <div><kbd>V</kbd>Bas-konuş (sesli sohbet)</div><div><kbd>B</kbd>Market</div>
             <div><kbd>Tab</kbd>Skor tablosu</div><div><kbd>M</kbd>/<kbd>Esc</kbd>Menü · takım</div>
             <div><kbd>Y</kbd>Genel sohbet</div><div><kbd>U</kbd>Takım sohbeti</div><div><kbd>F3</kbd>Performans</div>
+            <div><kbd>F</kbd>Silahı incele</div>
           </div>
           <h3 class="sec">MOBİL</h3>
           <p class="muted">Sol taraf: joystick (az itersen sessiz yürür). Sağ taraf: sürükleyerek bak. 🔥 basılı tutup sürükle: ateş ederken nişan al. 💣 bombalar, ◎ dürbün / yakına atış.</p>
@@ -171,6 +235,10 @@
     <div id="killfeed"></div>
     <div id="center"></div>
     <div id="bigMsg"></div>
+    <div id="highlight" class="hidden"></div>
+    <div id="killcamBar" class="hidden"></div>
+    <div id="ggBox" class="hidden"></div>
+    <div id="protectBar" class="hidden">🛡 DOĞUŞ KORUMASI</div>
     <div id="crosshair"><i class="l"></i><i class="r"></i><i class="u"></i><i class="d"></i><b></b></div>
     <div id="hitmarker"></div>
     <div id="dmgRing"></div>
@@ -226,6 +294,10 @@
       <div id="endTitle"></div>
       <div id="endScore"></div>
       <table class="sb end-table"><thead><tr><th>OYUNCU</th><th>TAKIM</th><th>L</th><th>A</th><th>Ö</th><th>K/Ö</th><th>HASAR</th><th>KAFA%</th><th>MVP</th></tr></thead><tbody id="endRows"></tbody></table>
+      <div id="endHl"></div>
+      <div id="endProgress" class="end-progress hidden"></div>
+      <div class="vote-h">SONRAKİ HARİTAYI OYLA</div>
+      <div id="voteBox" class="vote-box"></div>
       <div id="endNext"></div>
     </div>
   </div>
@@ -250,6 +322,8 @@
         <label>Ses <b id="volVal2"></b><input id="inVol2" type="range" min="0" max="1" step="0.05"></label>
         <h3 class="sec">ARKADAŞLARINI DAVET ET</h3>
         <div id="pauseFriends" class="friend-list small"></div>
+        <h3 class="sec">ODADAKİ OYUNCULAR</h3>
+        <div id="pausePlayers" class="friend-list small"></div>
         <button id="btnLeave" class="danger">ODADAN AYRIL</button>
       </div>
     </div>
@@ -294,6 +368,7 @@
   <script src="vendor/socket.io.min.js"></script>
   <script src="shared/shared.js"></script>
   <script src="shared/maps.js"></script>
+  <script src="shared/cosmetics.js"></script>
   <script src="config.js"></script>
   <script type="module" src="js/main.js"></script>
 </body>

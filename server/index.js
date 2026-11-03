@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const Room = require('./Room');
 const S = require('../shared/shared.js');
+const { Store } = require('./store');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const ROOT = path.join(__dirname, '..');
@@ -22,6 +23,7 @@ if (process.env.BLOCKOPS_FAST === '1') {
   // Test mode: shorter phases so automated tests can run whole matches quickly.
   Object.assign(S.CONFIG.ROUND, { WARMUP: 2, FREEZE: 1, POST: 1, GAMEOVER: 2, LIVE: 60 });
 }
+const store = new Store();
 const CORS = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()) : '*';
 
 // ---------------------------------------------------------------------------
@@ -115,7 +117,7 @@ const server = http.createServer((req, res) => {
   try { url = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400); res.end(); return; }
   if (url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, version: S.CONFIG.VERSION, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
+    res.end(JSON.stringify({ ok: true, version: S.CONFIG.VERSION, db: store.backend.name, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
     return;
   }
   if (url === '/version') {
@@ -153,9 +155,12 @@ function newRoomCode() {
   return c;
 }
 function roomOpts(data) {
+  const mode = S.MODES[data.mode] ? data.mode : 'comp';
   return {
     map: S.MAPS[data.map] ? data.map : S.MAP_ORDER[Math.floor(Math.random() * S.MAP_ORDER.length)],
-    difficulty: S.DIFFICULTY[data.difficulty] ? data.difficulty : 'medium'
+    // ranked always uses the hardest bots
+    difficulty: mode === 'ranked' ? 'hard' : (S.DIFFICULTY[data.difficulty] ? data.difficulty : 'medium'),
+    mode, store
   };
 }
 function getRoom(code, data) {
@@ -169,20 +174,20 @@ function getRoom(code, data) {
     }, 15000);
   }, roomOpts(data || {}));
   rooms.set(id, room);
-  console.log('[room] created', id, room.mapId, room.diff.id);
+  console.log('[room] created', id, room.mode.id, room.mapId, room.diff.id);
   return room;
 }
 function quickMatchRoom(data) {
   let best = null;
   for (const r of rooms.values()) {
     const humans = r.humanCount();
-    if (r.isPrivate || humans >= CONFIG_MAX_HUMANS || r.phase === 'gameover') continue;
-    if (data.difficulty && r.diff.id !== data.difficulty) continue;
+    if (r.isPrivate || humans >= r.perTeam * 2 || r.phase === 'gameover') continue;
+    if (r.mode.id !== (S.MODES[data.mode] ? data.mode : 'comp')) continue;
+    if (r.mode.id !== 'ranked' && data.difficulty && r.diff.id !== data.difficulty) continue;
     if (!best || humans > best.humanCount()) best = r;
   }
   return best || getRoom(null, data);
 }
-const CONFIG_MAX_HUMANS = S.CONFIG.MAX_PER_TEAM * 2;
 
 // Simple per-socket rate limiter
 function limiter(max, perMs) {
@@ -200,6 +205,10 @@ function limiter(max, perMs) {
 // right now (lobby sockets) and which room they're playing in.
 // ---------------------------------------------------------------------------
 const presence = new Map();   // code -> { sid, name, room, since }
+// Parties: a leader + friends who follow the leader into matches automatically
+const parties = new Map();    // partyId -> { id, leader, members: Set<code> }
+const partyOf = new Map();    // code -> partyId
+let partyCounter = 1;
 const cleanCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 function presenceOf(code) {
   const pr = presence.get(code);
@@ -215,35 +224,120 @@ function sendToCode(code, ev, data) {
   return false;
 }
 
+function partyState(pt) {
+  return { id: pt.id, leader: pt.leader, members: [...pt.members].map((c) => { const pr = presence.get(c); return { code: c, name: pr ? pr.name : c, online: !!pr }; }) };
+}
+function partyBroadcast(pt) { const st = partyState(pt); for (const c of pt.members) sendToCode(c, 'party:update', st); }
+function leaveParty(code) {
+  const id = partyOf.get(code);
+  if (!id) return;
+  partyOf.delete(code);
+  const pt = parties.get(id);
+  if (!pt) return;
+  pt.members.delete(code);
+  sendToCode(code, 'party:update', null);
+  if (pt.members.size <= 1) { for (const c of pt.members) { partyOf.delete(c); sendToCode(c, 'party:update', null); } parties.delete(id); return; }
+  if (pt.leader === code) pt.leader = [...pt.members][0];
+  partyBroadcast(pt);
+}
+/** keep the account's cosmetics in sync in every room it is playing in */
+function refreshEquip(code, profile) {
+  for (const r of rooms.values()) for (const p of r.players.values()) if (p.acct === code) { p.equip = Object.assign({}, profile.equipped); }
+}
+
 io.on('connection', (socket) => {
   let room = null;
   let player = null;
   let myCode = null;          // set on the lobby socket via 'hello'
   let gameCode = null;        // set on the game socket via join
+  let acct = null;            // authenticated account code (lobby or game socket)
   const inputLimit = limiter(120, 1000);
   const actionLimit = limiter(60, 1000);
   const shotLimit = limiter(40, 1000);
   const voiceLimit = limiter(200, 1000);
 
-  socket.on('join', (data, ack) => {
+  socket.on('join', async (data, ack) => {
     if (typeof ack !== 'function') return;
-    if (player) return ack({ ok: false, err: 'Zaten bir odadasın' });
+    if (player || socket._joining) return ack({ ok: false, err: 'Zaten bir odadasın' });
+    socket._joining = true;
     data = data || {};
+    // optional account login for persistent progress (never blocks playing if the DB is down)
+    let profile = null;
+    if (data.code && data.token) {
+      const a = await store.auth(cleanCode(data.code), data.token, cleanName(data.name)).catch(() => null);
+      if (a && a.ok) { acct = cleanCode(data.code); profile = a.profile; }
+    }
+    socket._joining = false;
+    if (socket.disconnected) return;   // left while we were loading the account
+    if (data.mode === 'ranked' && !acct) return ack({ ok: false, err: 'Dereceli için hesap gerekli (sunucuya bağlanılamadı, tekrar dene)' });
     const code = cleanRoomCode(data.room);
     const r = code ? getRoom(code, data) : quickMatchRoom(data);
     if (r && code) r.isPrivate = true;
     if (!r) return ack({ ok: false, err: 'Sunucu dolu' });
-    if (r.humanCount() >= CONFIG_MAX_HUMANS) return ack({ ok: false, err: 'Oda dolu (10/10)' });
+    if (r.humanCount() >= r.perTeam * 2) return ack({ ok: false, err: `Oda dolu (${r.perTeam * 2}/${r.perTeam * 2})` });
     room = r;
     player = room.addHuman(socket, cleanName(data.name));
+    if (profile) {
+      player.acct = acct;
+      player.equip = Object.assign({}, profile.equipped);
+      player.level = profile.level;
+      player.rankId = profile.rank.id;
+    }
     if (data.bots) {
       const n = Math.max(0, Math.min(9, data.bots | 0));
       for (let i = 0; i < n; i++) room.addBot();
     }
     gameCode = cleanCode(data.code);
     if (gameCode && presence.has(gameCode)) presence.get(gameCode).room = room.id;
-    ack({ ok: true, ...room.initPayload(player) });
+    ack({ ok: true, ...room.initPayload(player), account: !!profile });
     room.broadcastMsg(`${player.name} odaya katıldı`);
+    // party leader joined a match → bring the party along
+    const pid = gameCode && partyOf.get(gameCode);
+    const pt = pid && parties.get(pid);
+    if (pt && pt.leader === gameCode) for (const c of pt.members) if (c !== gameCode) sendToCode(c, 'party:follow', { room: room.id, mode: room.mode.id, map: room.map.name, leader: player.name });
+  });
+  socket.on('vote', (mapId) => { if (player && actionLimit()) room.onVote(player, String(mapId || '')); });
+
+  // ---- accounts / progression / cosmetics store
+  socket.on('auth', async (data, ack) => {
+    if (typeof ack !== 'function' || !data || !actionLimit()) return;
+    const code = cleanCode(data.code);
+    const res = await store.auth(code, data.token, data.name ? cleanName(data.name) : '').catch(() => ({ ok: false, err: 'db' }));
+    if (res.ok) acct = code;
+    ack(res);
+  });
+  const needAcct = (ack) => { if (typeof ack !== 'function') return false; if (!acct || !store.cached(acct)) { ack({ ok: false, err: 'Önce hesaba bağlan' }); return false; } return true; };
+  socket.on('store:buy', (data, ack) => {
+    if (!needAcct(ack) || !actionLimit()) return;
+    const res = data && data.kind === 'agent' ? store.buyAgent(acct, String(data.id || '')) : store.buySkin(acct, String((data && data.id) || ''));
+    ack(res);
+  });
+  socket.on('store:equip', (data, ack) => {
+    if (!needAcct(ack) || !actionLimit() || !data) return;
+    const res = store.equip(acct, String(data.weapon || ''), String(data.id || ''), S.WEAPONS);
+    if (res.ok) refreshEquip(acct, res.profile);
+    ack(res);
+  });
+  socket.on('profile:get', (x, ack) => { if (needAcct(ack)) ack({ ok: true, profile: store.view(acct) }); });
+  socket.on('profile:history', async (x, ack) => {
+    if (!needAcct(ack) || !actionLimit()) return;
+    ack({ ok: true, list: await store.history(acct, 10) });
+  });
+  socket.on('account:delete', async (data, ack) => {
+    if (typeof ack !== 'function' || !data || !actionLimit()) return;
+    const code = cleanCode(data.code);
+    const res = await store.deleteAccount(code, String(data.token || ''));
+    if (res.ok && acct === code) acct = null;
+    ack(res);
+  });
+  // ---- report a player (stored for moderation)
+  const reportLimit = limiter(5, 60000);
+  socket.on('report', (data) => {
+    if (!player || !data || !reportLimit()) return;
+    const target = room.players.get(String(data.id || ''));
+    if (!target || target === player || target.isBot) return;
+    store.report({ reporter: acct || gameCode || player.name, target: target.acct || '', targetName: target.name, reason: data.reason, room: room.id });
+    socket.emit('msg', { text: `${target.name} bildirildi. Teşekkürler — moderasyon inceleyecek.` });
   });
 
   socket.on('input', (arr) => { if (player && inputLimit()) room.onInputs(player, arr); });
@@ -298,6 +392,34 @@ io.on('connection', (socket) => {
     sendToCode(code, 'friends:invite', { code: myCode, name: me ? me.name : '', room: roomCode, map: r ? r.map.name : '' });
   });
 
+  // ---- parties (lobby socket)
+  socket.on('party:invite', (code) => {
+    code = cleanCode(code);
+    if (!myCode || !actionLimit() || code === myCode || !presence.has(code)) return;
+    let pid = partyOf.get(myCode);
+    if (!pid) {
+      pid = 'P' + (partyCounter++);
+      parties.set(pid, { id: pid, leader: myCode, members: new Set([myCode]) });
+      partyOf.set(myCode, pid);
+      partyBroadcast(parties.get(pid));
+    }
+    const pt = parties.get(pid);
+    if (pt.members.size >= 5) { socket.emit('party:error', 'Parti dolu (5/5)'); return; }
+    const me = presence.get(myCode);
+    sendToCode(code, 'party:invite', { party: pid, code: myCode, name: me ? me.name : '' });
+  });
+  socket.on('party:accept', (pid) => {
+    pid = String(pid || '');
+    const pt = parties.get(pid);
+    if (!myCode || !pt || !actionLimit()) return;
+    if (pt.members.size >= 5) { socket.emit('party:error', 'Parti dolu'); return; }
+    if (partyOf.get(myCode) && partyOf.get(myCode) !== pid) leaveParty(myCode);
+    pt.members.add(myCode);
+    partyOf.set(myCode, pid);
+    partyBroadcast(pt);
+  });
+  socket.on('party:leave', () => { if (myCode && actionLimit()) leaveParty(myCode); });
+
   // ---- weapons on the ground
   socket.on('drop', () => { if (player && actionLimit()) room.onDropWeapon(player); });
   socket.on('pickup', (id) => { if (player && actionLimit()) room.onPickup(player, id | 0); });
@@ -321,7 +443,7 @@ io.on('connection', (socket) => {
   });
   socket.on('pingrep', (ms) => { if (player && Number.isFinite(ms)) player.ping = Math.round(Math.min(999, Math.max(0, ms))); });
   socket.on('disconnect', () => {
-    if (myCode && presence.get(myCode) && presence.get(myCode).sid === socket.id) presence.delete(myCode);
+    if (myCode && presence.get(myCode) && presence.get(myCode).sid === socket.id) { presence.delete(myCode); leaveParty(myCode); }
     if (gameCode && presence.has(gameCode) && presence.get(gameCode).room === (room && room.id)) presence.get(gameCode).room = null;
     if (room && player) {
       const name = player.name;
@@ -345,12 +467,16 @@ server.listen(PORT, () => {
 
 function shutdown() {
   console.log('Kapatılıyor...');
-  for (const r of rooms.values()) r.destroy();
+  for (const r of rooms.values()) {
+    // a deploy/restart is not the players' fault: give everyone a normal result instead of an abandon
+    for (const p of r.players.values()) p.recorded = true;
+    r.destroy();
+  }
   io.close();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 3000).unref();
+  store.close().finally(() => server.close(() => process.exit(0)));
+  setTimeout(() => process.exit(0), 5000).unref();
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-module.exports = { server, rooms };
+module.exports = { server, rooms, store };

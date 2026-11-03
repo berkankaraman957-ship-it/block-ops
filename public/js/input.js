@@ -40,7 +40,7 @@ export class Input {
   bindKeyboard() {
     const discrete = {
       KeyR: 'reload', Digit1: 'slot1', Digit2: 'slot2', Digit3: 'slot3', Digit4: 'slot4', Digit5: 'slot4', KeyG: 'dropWeapon', KeyE: 'usePress', KeyU: 'teamChat', KeyQ: 'lastWeapon',
-      KeyB: 'buy', KeyM: 'teamMenu', KeyY: 'chat', Enter: 'chat', F3: 'stats', KeyN: 'nextSpec'
+      KeyB: 'buy', KeyM: 'teamMenu', KeyY: 'chat', Enter: 'chat', F3: 'stats', KeyN: 'nextSpec', KeyF: 'inspect'
     };
     window.addEventListener('keydown', (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;

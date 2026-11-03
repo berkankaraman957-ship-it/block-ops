@@ -140,6 +140,68 @@ export class Effects {
     }
   }
 
+  /** headshot on a helmeted player: the helmet flies off and bounces on the floor */
+  helmetPop(pos, dir, color) {
+    this.particle({
+      x: pos[0], y: pos[1], z: pos[2],
+      vx: dir[0] * 4 + (Math.random() - 0.5), vy: 3.5 + Math.random() * 1.5, vz: dir[2] * 4 + (Math.random() - 0.5),
+      life: 4, max: 4, s: 0.34, sl: 0.34, c: color || [0.24, 0.29, 0.23], g: 13, a: 1, spin: true
+    });
+    for (let i = 0; i < 6; i++) this.particle({ x: pos[0], y: pos[1], z: pos[2], vx: (Math.random() - 0.5) * 3 + dir[0] * 2, vy: Math.random() * 3, vz: (Math.random() - 0.5) * 3 + dir[2] * 2,
+      life: 0.25, max: 0.25, s: 0.03, c: [1, 0.9, 0.6], g: 6, a: 1, e: 1 });
+  }
+
+  molotovBurst(x, y, z) {
+    this.light(x, y + 0.5, z, 10, [1, 0.55, 0.2], 4);
+    for (let i = 0; i < 26; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 4;
+      this.particle({ x, y: y + 0.2, z, vx: Math.cos(a) * sp, vy: 1 + Math.random() * 3, vz: Math.sin(a) * sp,
+        life: 0.4 + Math.random() * 0.4, max: 0.8, s: 0.12 + Math.random() * 0.12, grow: 0.4, c: [1, 0.5 + Math.random() * 0.3, 0.12], g: 1, a: 1, e: 1, drag: 2 });
+    }
+    for (let i = 0; i < 8; i++) this.particle({ x, y: y + 0.3, z, vx: (Math.random() - 0.5) * 5, vy: Math.random() * 3, vz: (Math.random() - 0.5) * 5,
+      life: 0.8, max: 0.8, s: 0.03, c: [0.55, 0.7, 0.4], g: 14, a: 1, spin: true });     // glass shards
+  }
+  fireOut(x, y, z) {
+    for (let i = 0; i < 14; i++) this.particle({ x: x + (Math.random() - 0.5) * 3, y: y + 0.3, z: z + (Math.random() - 0.5) * 3, vx: 0, vy: 1 + Math.random(), vz: 0,
+      life: 1.4, max: 1.4, s: 0.25, grow: 0.6, c: [0.6, 0.6, 0.62], g: -0.4, a: 0.45, alpha: true });
+  }
+  breachBlast(x, y, z) {
+    this.light(x, y, z, 22, [1, 0.6, 0.3], 7);
+    this.shake = Math.max(this.shake, 0.9);
+    for (let i = 0; i < 60; i++) {
+      const a = Math.random() * Math.PI * 2, e = (Math.random() - 0.3) * Math.PI * 0.6, sp = 3 + Math.random() * 9;
+      const fire = i < 24;
+      this.particle({ x, y, z, vx: Math.cos(a) * Math.cos(e) * sp, vy: Math.sin(e) * sp + 1, vz: Math.sin(a) * Math.cos(e) * sp,
+        life: fire ? 0.35 + Math.random() * 0.3 : 1.3 + Math.random(), max: fire ? 0.65 : 2.2,
+        s: fire ? 0.2 + Math.random() * 0.2 : 0.35 + Math.random() * 0.35, grow: fire ? 0.5 : 1.1,
+        c: fire ? [1, 0.6, 0.2] : [0.4, 0.38, 0.35], g: fire ? 1 : -0.6, a: fire ? 1 : 0.6, e: fire ? 1 : 0, alpha: !fire, drag: 3 });
+    }
+  }
+  /** burning molotov areas (rendered every frame from the snapshot list) */
+  renderFires(add, fires, serverNow, dt) {
+    const G = S.CONFIG.GRENADE.molotov;
+    for (const f of fires) {
+      const age = (serverNow - f.t0) / 1000;
+      if (age < 0 || age > G.duration) continue;
+      const fade = age > G.duration - 1 ? G.duration - age : 1;
+      const rng = S.mulberry32(f.id * 104729);
+      const n = Math.round((this.smokeCubes || 70) * 0.6);
+      const t = performance.now() / 1000;
+      for (let i = 0; i < n; i++) {
+        const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * G.radius * Math.min(1, age * 2.5 + 0.3);
+        const x = f.x + Math.cos(a) * r, z = f.z + Math.sin(a) * r;
+        if (this.world.isSolid(Math.floor(x), f.y, Math.floor(z))) continue;
+        const ph = rng() * 10;
+        const h = (0.25 + 0.45 * Math.abs(Math.sin(t * (3 + rng() * 3) + ph))) * fade;
+        const s = 0.18 + rng() * 0.16;
+        add.pushAABB(x, f.y + h * 0.5, z, s, h, s, 1, 0.42 + rng() * 0.3, 0.08, 0.75 * fade, 1);
+      }
+      if (Math.random() < dt * 6) this.light(f.x, f.y + 0.6, f.z, 2.2 + Math.random(), [1, 0.5, 0.18], 14);
+      if (Math.random() < dt * 8) this.particle({ x: f.x + (Math.random() - 0.5) * G.radius, y: f.y + 0.6, z: f.z + (Math.random() - 0.5) * G.radius, vx: 0, vy: 1.2, vz: 0,
+        life: 1.6, max: 1.6, s: 0.22, grow: 0.5, c: [0.22, 0.2, 0.2], g: -0.6, a: 0.4, alpha: true });
+    }
+  }
+
   /** Voxel smoke clouds: deterministic cube clusters that grow, swirl and fade. */
   renderSmokes(alpha, smokes, serverNow) {
     const G = S.CONFIG.GRENADE.smoke;

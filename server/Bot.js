@@ -91,6 +91,7 @@ class BotBrain {
     if (p.team === 'CT' && !p.kit && m() >= 400 && Math.random() < 0.6) room.onBuy(p, 'defuse');
     if (m() >= 300 && Math.random() < 0.6) room.onBuy(p, 'he');
     if (m() >= 200 && Math.random() < 0.4) room.onBuy(p, 'flash');
+    if (m() >= 400 && Math.random() < 0.25) room.onBuy(p, 'molotov');
     if (!p.weapons[1] && m() >= 700 && room.round > 1 && Math.random() < 0.5) room.onBuy(p, Math.random() < 0.5 ? 'hc50' : 'vex');
     room.switchSlot(p, p.weapons[1] ? 1 : 2, true);
   }
@@ -171,9 +172,10 @@ class BotBrain {
         this.aimHead = Math.random() < sk.head;
       }
       // HE grenade at medium range
-      if (room.nadeCount(p) && p.nades.he > 0 && seen.dist > 9 && seen.dist < 24 && now > this.nadeCooldown && Math.random() < 0.04 * sk.smart) {
+      const lethal = p.nades.he > 0 ? 'he' : p.nades.molotov > 0 ? 'molotov' : null;
+      if (lethal && seen.dist > 8 && seen.dist < 24 && now > this.nadeCooldown && Math.random() < 0.04 * sk.smart) {
         this.nadeCooldown = now + 8000;
-        if (p.slot !== 4) { p.nadeSel = 'he'; room.switchSlot(p, 4, true); }
+        if (p.slot !== 4) { p.nadeSel = lethal; room.switchSlot(p, 4, true); }
       }
       const eye = this.eye(p);
       const tp = this.aimHead ? [q.x, q.y + S.playerHeight(q) - 0.2, q.z] : [q.x, q.y + S.playerHeight(q) * (0.46 + Math.random() * 0.08), q.z];
@@ -254,6 +256,22 @@ class BotBrain {
   }
   chooseGoal() {
     const room = this.room, p = this.p, bomb = room.bomb, now = room.now();
+    if (!room.mode.bomb) {
+      // no objective: hunt the closest enemy (re-target every few seconds), else roam the sites
+      if (this.lastSeenPos && now - this.lastSeenTime < 4000) return { pos: this.lastSeenPos, key: 'hunt' + Math.round(this.lastSeenPos[0]) + ',' + Math.round(this.lastSeenPos[1]) };
+      let best = null, bd = Infinity;
+      for (const q of room.players.values()) {
+        if (!q.alive || q.team === p.team || (q.team !== 'T' && q.team !== 'CT')) continue;
+        const d = Math.hypot(q.x - p.x, q.z - p.z);
+        if (d < bd) { bd = d; best = q; }
+      }
+      if (best) {
+        const slot = Math.floor(now / 3000);
+        return { pos: [best.x, best.z], key: 'chase' + best.id + ':' + slot };
+      }
+      if (!this.defendSpot) this.defendSpot = this.randomSpotIn(room.map.sites[Math.random() < 0.5 ? 'A' : 'B']);
+      return { pos: this.defendSpot, key: 'roam', guard: true };
+    }
     if (p.team === 'T') {
       if (bomb.state === 'dropped') return { pos: [bomb.x, bomb.z], key: 'drop' };
       if (bomb.state === 'planted') {

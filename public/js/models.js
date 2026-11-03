@@ -9,10 +9,61 @@ export const TEAM_STYLE = {
   CT: { shirt: 0x34548c, vest: 0x2c3a4c, pants: 0x2a3343, skin: 0xd8a06a, mask: 0x3a4a5c, accent: 0x6fb6ff, sleeve: 0x2f4b7c, glove: 0x1e2228 }
 };
 
+const hexRgb = (h) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/**
+ * Re-colours a generated gun model with a cosmetic skin (see shared/cosmetics.js).
+ * Purely visual: geometry, muzzle position, hitboxes etc. are untouched.
+ */
+export function applySkin(root, skinId) {
+  const C = window.COSMETICS;
+  const sk = C && skinId ? C.SKINS[skinId] : null;
+  if (!sk) return;
+  const pal = sk.pal.map(hexRgb);
+  const boxes = [];
+  const walk = (n, oz) => { for (const b of n.boxes) boxes.push([b, oz + b.o[2]]); for (const c of n.children) walk(c, oz + c.pos[2]); };
+  walk(root, 0);
+  let zmin = Infinity, zmax = -Infinity;
+  for (const [, z] of boxes) { zmin = Math.min(zmin, z); zmax = Math.max(zmax, z); }
+  let k = 0;
+  for (const [b, z] of boxes) {
+    if (b.e > 0) continue;                         // keep lenses / LEDs
+    const L = 0.299 * b.c[0] + 0.587 * b.c[1] + 0.114 * b.c[2];
+    if (L < 0.075) { k++; continue; }              // keep the darkest bits (muzzle, bore) for contrast
+    const i = k++;
+    const mul = (c, m) => [clamp01(c[0] * m), clamp01(c[1] * m), clamp01(c[2] * m)];
+    let col;
+    switch (sk.mode) {
+      case 'camo': col = mul(pal[((i * 2654435761) >>> 0) % pal.length], 0.78 + L * 0.8); break;
+      case 'two': col = mul(i % 3 === 1 ? pal[1] : pal[0], 0.62 + L * 1.3); break;
+      case 'metal': col = mul(pal[0], 0.72 + L * 1.1); b.e = 0.12; break;
+      case 'neon':
+        if (i % 3 === 1) { col = pal[1]; b.e = 0.7; } else col = mul(pal[0], 0.85 + L * 0.8);
+        break;
+      case 'gradient': {
+        const f = zmax > zmin ? (z - zmin) / (zmax - zmin) : 0;
+        col = mul([pal[0][0] + (pal[1][0] - pal[0][0]) * f, pal[0][1] + (pal[1][1] - pal[0][1]) * f, pal[0][2] + (pal[1][2] - pal[0][2]) * f], 0.75 + L * 0.9);
+        if (sk.glow) b.e = sk.glow * (1 - f);
+        break;
+      }
+      default: col = mul(pal[0], 0.45 + L * 1.9);
+    }
+    b.c = col;
+  }
+}
+
 /**
  * @returns {{root: Node, mag: Node|null, muzzle: number[], grip: number[], fore: number[], kind: string}}
  */
-export function buildGun(id) {
+export function buildGun(id, skin) {
+  const gun = buildGunBase(id);
+  if (skin) applySkin(gun.root, skin);
+  gun.skin = skin || '';
+  return gun;
+}
+
+function buildGunBase(id) {
   const g = new Node('gun');
   let mag = null, muzzle = [0, 0.04, -0.6], fore = [0, -0.02, -0.3], kind = 'rifle';
   const grip = (color, z) => {
@@ -218,6 +269,28 @@ export function buildGun(id) {
       muzzle = [0, 0.045, -0.17]; fore = [0, -0.07, 0.02]; kind = 'pistol';
       break;
     }
+    case 'molotov': {
+      g.box(0.065, 0.13, 0.065, 0, 0.01, 0, 0x6a7a3a);                 // bottle
+      g.box(0.05, 0.03, 0.05, 0, 0.09, 0, 0x5a6a30);                   // shoulder
+      g.box(0.026, 0.06, 0.026, 0, 0.13, 0, 0x5a6a30);                 // neck
+      g.box(0.03, 0.05, 0.03, 0.006, 0.17, 0, 0xd8c8a0);               // rag
+      const fl = g.add(new Node('flame'));
+      fl.box(0.03, 0.05, 0.03, 0.006, 0.215, 0, 0xffa030, 1);
+      fl.box(0.016, 0.03, 0.016, 0.006, 0.25, 0, 0xffe070, 1);
+      g.box(0.067, 0.04, 0.067, 0, -0.02, 0, 0xc06a20, 0.25);          // fuel inside
+      muzzle = [0, 0, 0]; fore = [0, -0.03, 0.02]; kind = 'grenade';
+      break;
+    }
+    case 'breach': {
+      g.box(0.15, 0.05, 0.1, 0, 0, 0, 0x4a5236);                       // charge block
+      g.box(0.152, 0.012, 0.03, 0, 0, -0.025, 0x2a2a2a);               // tape
+      g.box(0.152, 0.012, 0.03, 0, 0, 0.025, 0x2a2a2a);
+      g.box(0.05, 0.02, 0.04, 0.03, 0.035, 0, 0x1d1d1d);               // detonator
+      g.box(0.014, 0.014, 0.014, 0.045, 0.05, 0.0, 0xff2a2a, 1);       // LED
+      g.box(0.006, 0.07, 0.006, -0.05, 0.06, 0.03, 0x111111);           // antenna
+      muzzle = [0, 0, 0]; fore = [0, -0.03, 0.02]; kind = 'grenade';
+      break;
+    }
     case 'he': case 'flash': case 'smoke': {
       const col = id === 'he' ? 0x3c4a2e : id === 'flash' ? 0x8a8f96 : 0x5a6a7a;
       if (id === 'he') g.box(0.075, 0.08, 0.075, 0, 0.0, 0, col);
@@ -257,8 +330,11 @@ export function buildBomb() {
 }
 
 export class Avatar {
-  constructor(team) {
+  constructor(team, accent) {
     this.team = team;
+    this.accent = accent || null;
+    this.deathDir = null; this.deathHs = false;
+    this.skin = '';
     this.root = new Node('avatar');
     this.walkPhase = 0;
     this.walkAmt = 0;
@@ -270,7 +346,8 @@ export class Avatar {
     this.build(team);
   }
   build(team) {
-    const st = TEAM_STYLE[team] || TEAM_STYLE.T;
+    const st = Object.assign({}, TEAM_STYLE[team] || TEAM_STYLE.T);
+    if (this.accent) st.accent = this.accent;
     const ct = team === 'CT';
     const r = this.root;
     r.children = []; r.boxes = [];
@@ -313,10 +390,11 @@ export class Avatar {
       this.head.box(0.42, 0.2, 0.42, 0, 0.1, 0, st.mask);                 // balaclava lower
       this.head.box(0.42, 0.12, 0.42, 0, 0.37, 0, st.mask);               // balaclava top
       this.head.box(0.32, 0.02, 0.02, 0, 0.3, -0.212, 0x111111);
-      this.head.box(0.12, 0.06, 0.03, 0, 0.42, -0.2, 0xb33a2a);            // headband knot
+      this.head.box(0.12, 0.06, 0.03, 0, 0.42, -0.2, this.accent || 0xb33a2a);  // headband knot
     } else {
-      this.head.box(0.46, 0.16, 0.46, 0, 0.38, 0, 0x3d4a3a);              // helmet
-      this.head.box(0.48, 0.04, 0.48, 0, 0.3, 0, 0x2f3a2c);               // helmet rim
+      this.helmet = this.head.add(new Node('helmet'));
+      this.helmet.box(0.46, 0.16, 0.46, 0, 0.38, 0, 0x3d4a3a);            // helmet
+      this.helmet.box(0.48, 0.04, 0.48, 0, 0.3, 0, 0x2f3a2c);             // helmet rim
       this.head.box(0.34, 0.08, 0.04, 0, 0.36, -0.225, 0x1a1a1a);         // goggles strap/frame
       this.head.box(0.3, 0.06, 0.02, 0, 0.36, -0.245, st.accent, 0.6);     // lens
       this.head.box(0.32, 0.12, 0.03, 0, 0.09, -0.205, st.mask);           // face mask
@@ -336,11 +414,12 @@ export class Avatar {
     this.gunMount.rot = [-Math.PI / 2, 0, 0];
     this.gunId = null;
   }
-  setWeapon(id) {
-    if (this.gunId === id) return;
-    this.gunId = id;
+  setWeapon(id, skin) {
+    skin = skin || '';
+    if (this.gunId === id && this.skin === skin) return;
+    this.gunId = id; this.skin = skin;
     this.gunMount.children = [];
-    this.gun = buildGun(id);
+    this.gun = buildGun(id, skin);
     this.gunMount.add(this.gun.root);
   }
   /** world-space muzzle position (after update) */
@@ -356,18 +435,36 @@ export class Avatar {
     const r = this.root;
     r.pos = [st.x, st.y, st.z];
     r.rot = [0, st.yaw, 0];
-    // death fall
+    // ragdoll-style death: the body is thrown AWAY from the killer, limbs splay, a small bounce
     if (!st.alive) {
-      this.deathT = Math.min(1, this.deathT + dt * 2.4);
-      const t = this.deathT;
-      r.rot[0] = (Math.PI / 2) * (t * t);
-      r.pos = [st.x, st.y + 0.1 * Math.sin(t * Math.PI), st.z];
-      this.armR.rot = [Math.PI * 0.9 * t, 0, 0.3 * t];
-      this.armL.rot = [Math.PI * 0.9 * t, 0, -0.3 * t];
+      this.deathT = Math.min(1, this.deathT + dt * 2.2);
+      const t = this.deathT, e = t * t;
+      let fwd = -1, side = 0;                       // default: fall backwards
+      if (this.deathDir) {
+        const fx = -Math.sin(st.yaw), fz = -Math.cos(st.yaw);   // avatar forward
+        const rx = Math.cos(st.yaw), rz = -Math.sin(st.yaw);    // avatar right
+        fwd = this.deathDir[0] * fx + this.deathDir[1] * fz;
+        side = this.deathDir[0] * rx + this.deathDir[1] * rz;
+        const l = Math.hypot(fwd, side) || 1; fwd /= l; side /= l;
+      }
+      const fall = (Math.PI / 2) * e;
+      r.rot = [-fwd * fall, st.yaw, -side * fall];
+      const slide = 0.55 * (1 - (1 - t) * (1 - t));
+      const dx = this.deathDir ? this.deathDir[0] : 0, dz = this.deathDir ? this.deathDir[1] : 0;
+      const bounce = t > 0.72 ? 0.07 * Math.sin(Math.min(1, (t - 0.72) / 0.28) * Math.PI) : 0;
+      r.pos = [st.x + dx * slide, st.y + 0.12 * e + bounce, st.z + dz * slide];
+      const flop = this.flopSeed || (this.flopSeed = 0.6 + Math.random() * 0.8);
+      this.armR.rot = [Math.PI * 0.55 * e * flop, 0, 0.9 * e];
+      this.armL.rot = [Math.PI * 0.45 * e / flop, 0, -0.9 * e];
+      this.legL.rot = [0.25 * e * flop, 0, -0.28 * e];
+      this.legR.rot = [-0.2 * e, 0, 0.32 * e * flop];
+      this.head.rot = this.deathHs ? [0.7 * e, 0.5 * e * flop, 0] : [0.25 * e, 0.2 * e, 0];
+      if (this.helmet) this.helmet.visible = !this.helmetPopped;
       r.update(null);
       return;
     }
-    this.deathT = 0;
+    this.deathT = 0; this.deathDir = null; this.deathHs = false; this.flopSeed = 0;
+    if (this.helmet) { this.helmetPopped = false; this.helmet.visible = true; }
     const speed = st.speed || 0;
     const moving = st.onGround ? Math.min(1, speed / 6.5) : 0.2;
     this.walkAmt += (moving - this.walkAmt) * Math.min(1, dt * 10);
@@ -399,6 +496,53 @@ export class Avatar {
       this.armL.rot = [aim - 0.15 + reloadWobble, 0.6, 0];
     }
     r.update(null);
+  }
+}
+
+/**
+ * Coloured side-view preview of a weapon with a skin (store / inventory). Draws onto `canvas`.
+ */
+export function skinPreview(canvas, id, skin) {
+  const gun = buildGun(id, skin);
+  gun.root.update(null);
+  const items = [];
+  const walk = (n) => {
+    if (n.visible === false) return;
+    for (const b of n.boxes) {
+      const m = n.world;
+      const pts = [];
+      for (const sy of [-0.5, 0.5]) for (const sz of [-0.5, 0.5]) {
+        const lx = b.o[0], ly = b.o[1] + sy * b.s[1], lz = b.o[2] + sz * b.s[2];
+        pts.push([m[2] * lx + m[6] * ly + m[10] * lz + m[14], m[1] * lx + m[5] * ly + m[9] * lz + m[13]]);
+      }
+      const depth = m[0] * b.o[0] + m[4] * b.o[1] + m[8] * b.o[2] + m[12] + b.s[0] * 0.5;
+      items.push({ pts, c: b.c, e: b.e, depth });
+    }
+    for (const c of n.children) walk(c);
+  };
+  walk(gun.root);
+  items.sort((a, b) => a.depth - b.depth);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const it of items) for (const [x, y] of it.pts) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+  const W = canvas.width, H = canvas.height, pad = 10;
+  const sc = Math.min((W - pad * 2) / (maxX - minX || 1), (H - pad * 2) / (maxY - minY || 1));
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  const ox = (W - (maxX - minX) * sc) / 2, oy = (H - (maxY - minY) * sc) / 2;
+  for (const it of items) {
+    const q = [it.pts[0], it.pts[1], it.pts[3], it.pts[2]];
+    ctx.beginPath();
+    q.forEach(([x, y], i) => {
+      const px = W - (ox + (x - minX) * sc), py = H - (oy + (y - minY) * sc);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+    const c = it.c.map((v) => Math.round(Math.min(1, v * (1 + (it.e || 0) * 0.6)) * 255));
+    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+    if (it.e > 0.3) { ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 8; } else ctx.shadowBlur = 0;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 0.6; ctx.stroke();
   }
 }
 

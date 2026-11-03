@@ -134,7 +134,7 @@ export class WorldRenderer {
     this.cz = Math.ceil(world.sz / this.CS);
     this.chunks = [];
     this.dirty = new Set();
-    this.texture = renderer.createTextureFromCanvas(createAtlasCanvas());
+    this.texture = renderer.createTextureArray(createAtlasCanvas(), TILE, TILES);
     this.scratch = new Float32Array(1 << 18);
     for (let z = 0; z < this.cz; z++) for (let y = 0; y < this.cy; y++) for (let x = 0; x < this.cx; x++) {
       this.chunks.push({ x, y, z, vao: null, vbo: null, count: 0, center: [(x + 0.5) * this.CS, (y + 0.5) * this.CS, (z + 0.5) * this.CS] });
@@ -279,14 +279,13 @@ export class WorldRenderer {
               v.shade = light * AO_CURVE[ao];
               v.ao = ao;
             }
-            const u0 = (t * TILE + 0.02) / (TILE * TILES), u1 = ((t + 1) * TILE - 0.02) / (TILE * TILES);
             const flip = verts[0].ao + verts[2].ao < verts[1].ao + verts[3].ao;
             const ord = flip ? (f.s > 0 ? [1, 2, 3, 1, 3, 0] : [1, 3, 2, 1, 0, 3]) : (f.s > 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
-            if (n + 66 > out.length) { const bigger = new Float32Array(out.length * 2); bigger.set(out); out = this.scratch = bigger; }
+            if (n + 72 > out.length) { const bigger = new Float32Array(out.length * 2); bigger.set(out); out = this.scratch = bigger; }
             for (const k of ord) {
               const v = verts[k];
               out[n++] = v.x; out[n++] = v.y; out[n++] = v.z;
-              out[n++] = u0 + (u1 - u0) * v.tu; out[n++] = 1 - v.tv;
+              out[n++] = v.tu; out[n++] = 1 - v.tv; out[n++] = t;
               out[n++] = v.shade; out[n++] = v.shade; out[n++] = v.shade * (t === BLOCK.SNOW || t === BLOCK.ICE ? 1.03 : 1);
               out[n++] = nx; out[n++] = ny; out[n++] = nz;
             }
@@ -300,16 +299,16 @@ export class WorldRenderer {
       c.vbo = gl.createBuffer();
       gl.bindVertexArray(c.vao);
       gl.bindBuffer(gl.ARRAY_BUFFER, c.vbo);
-      const stride = 11 * 4;
+      const stride = 12 * 4;
       gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
-      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 12);
-      gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, 20);
-      gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 32);
+      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+      gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, 24);
+      gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 36);
       gl.bindVertexArray(null);
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, c.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, out.subarray(0, n), gl.STATIC_DRAW);
-    c.count = n / 11;
+    c.count = n / 12;
   }
   draw(vp, cam) {
     const gl = this.gl;

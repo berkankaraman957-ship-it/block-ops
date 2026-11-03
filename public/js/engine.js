@@ -202,13 +202,13 @@ vec3 flashLight(vec3 wp, vec3 n) {
 
 const WORLD_VS = `#version 300 es
 layout(location=0) in vec3 aPos;
-layout(location=1) in vec2 aUV;
+layout(location=1) in vec3 aUV;
 layout(location=2) in vec3 aCol;
 layout(location=3) in vec3 aNorm;
 uniform mat4 uVP;
 uniform vec3 uCam;
 uniform vec2 uFog;
-out vec2 vUV; out vec3 vCol; out float vFog; out vec3 vWP; out vec3 vN;
+out vec3 vUV; out vec3 vCol; out float vFog; out vec3 vWP; out vec3 vN;
 void main() {
   vUV = aUV; vCol = aCol; vWP = aPos; vN = aNorm;
   float d = distance(aPos, uCam);
@@ -217,8 +217,9 @@ void main() {
 }`;
 const WORLD_FS = `#version 300 es
 precision mediump float;
-in vec2 vUV; in vec3 vCol; in float vFog; in vec3 vWP; in vec3 vN;
-uniform sampler2D uTex;
+precision mediump sampler2DArray;
+in vec3 vUV; in vec3 vCol; in float vFog; in vec3 vWP; in vec3 vN;
+uniform sampler2DArray uTex;
 uniform vec3 uFogCol;
 ${LIGHTS_GLSL}
 out vec4 o;
@@ -513,7 +514,7 @@ export class Renderer {
     gl.uniform4fv(P.u.uLights, this.lights);
     gl.uniform3fv(P.u.uLightCol, this.lightCols);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
     gl.uniform1i(P.u.uTex, 0);
   }
   useBoxes(vp, cam, opts) {
@@ -533,6 +534,32 @@ export class Renderer {
     if (mode === 'none') { gl.disable(gl.BLEND); gl.depthMask(true); }
     else if (mode === 'alpha') { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
     else if (mode === 'add') { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE); gl.depthMask(false); }
+  }
+  /**
+   * Texture array (one layer per block type) with full mipmaps + anisotropic filtering:
+   * no atlas bleeding and no shimmering ("pixel noise") on distant / oblique surfaces.
+   */
+  createTextureArray(canvas, tile, layers) {
+    const gl = this.gl;
+    const src = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    const data = new Uint8Array(tile * tile * 4 * layers);
+    for (let l = 0; l < layers; l++)
+      for (let y = 0; y < tile; y++)
+        for (let x = 0; x < tile; x++) {
+          const si = (y * canvas.width + l * tile + x) * 4, di = ((l * tile + y) * tile + x) * 4;
+          data[di] = src[si]; data[di + 1] = src[si + 1]; data[di + 2] = src[si + 2]; data[di + 3] = 255;
+        }
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, tile, tile, layers, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    if (aniso) gl.texParameterf(gl.TEXTURE_2D_ARRAY, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+    return t;
   }
   createTextureFromCanvas(canvas) {
     const gl = this.gl, t = gl.createTexture();

@@ -660,6 +660,12 @@ class Room {
         p.needsDefaults = false;
       }
       this.spawn(p, p.team === 'T' ? ti++ : ci++);
+      // every round starts with full magazines and full reserve ammo
+      for (const slot of [1, 2]) {
+        const ws = p.weapons[slot];
+        if (ws && WEAPONS[ws.id]) { ws.ammo = WEAPONS[ws.id].mag; ws.reserve = WEAPONS[ws.id].reserve; }
+      }
+      p.reloadEnd = 0;
       if (!p.weapons[2]) {
         const pistol = p.team === 'CT' ? 'p12' : 'p9';
         p.weapons[2] = { id: pistol, ammo: WEAPONS[pistol].mag, reserve: WEAPONS[pistol].reserve };

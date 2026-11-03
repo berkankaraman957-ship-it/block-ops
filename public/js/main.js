@@ -42,9 +42,11 @@ class Game {
     const q = this.settings.quality;
     const dpr = window.devicePixelRatio || 1;
     // Render resolution: "auto" starts at a sane cap and adapts to the measured frame time.
-    this.maxRatio = q === 'low' ? Math.min(dpr, 0.75) : q === 'medium' ? Math.min(dpr, 1.0) : q === 'high' ? Math.min(dpr, 2) : Math.min(dpr, isTouch ? 1.15 : 1.25);
-    this.minRatio = q === 'auto' ? 0.5 : this.maxRatio;
-    this.renderer = new Renderer(this.canvas, { antialias: q === 'high', pixelRatio: this.maxRatio });
+    this.maxRatio = q === 'low' ? Math.min(dpr, 0.85) : q === 'medium' ? Math.min(dpr, 1.0) : q === 'high' ? Math.min(dpr, 2) : Math.min(dpr, isTouch ? 1.25 : 1.5);
+    this.minRatio = q === 'auto' ? Math.min(this.maxRatio, 0.8) : this.maxRatio;
+    // MSAA (smooth edges) everywhere except "low"
+    this.renderer = new Renderer(this.canvas, { antialias: q !== 'low', pixelRatio: this.maxRatio });
+    this.lastScaleDown = 0;
     this.frameTimes = []; this.lastScaleCheck = performance.now();
     this.detectGpu();
     this.opaque = new BoxBatch(this.renderer, 2048);
@@ -465,6 +467,7 @@ class Game {
       this.sfx.roundStart();
       if (m.carrier === this.myId) this.hud.centerMsg('💣 Bomba sende! Bir bölgeye (A/B) git ve E tuşuna basılı tut.', 6000);
       this.unacked = []; this.recoilIdx = 0;
+      this.reloadUntil = 0; this.vm.cancelReload(); this.scoped = 0;
     });
     n.on('live', () => { this.hud.centerMsg('GİT GİT GİT!', 1500); if (this.hud.buyOpen && !(this.you && this.you.cb)) this.toggleBuy(false); });
     n.on('rend', (m) => { this.hud.roundEnd(m, this.myTeam); this.sfx.roundEnd(m.w === this.myTeam); });
@@ -821,13 +824,14 @@ class Game {
     this.frameTimes.push(dt);
     if (this.frameTimes.length > 90) this.frameTimes.shift();
     const now = performance.now();
-    if (now - this.lastScaleCheck < 1500 || this.frameTimes.length < 60) return;
+    // slow, hysteretic changes: no visible "pumping" of sharpness
+    if (now - this.lastScaleCheck < 4000 || this.frameTimes.length < 90) return;
     this.lastScaleCheck = now;
     const sorted = this.frameTimes.slice().sort((a, b) => a - b);
     const p80 = sorted[Math.floor(sorted.length * 0.8)] * 1000;
     let r = this.renderer.pixelRatio;
-    if (p80 > 19) r = Math.max(this.minRatio, r * 0.85);
-    else if (p80 < 13 && r < this.maxRatio) r = Math.min(this.maxRatio, r * 1.08);
+    if (p80 > 24) { r = Math.max(this.minRatio, r - 0.15); this.lastScaleDown = now; }
+    else if (p80 < 12 && r < this.maxRatio && now - this.lastScaleDown > 15000) r = Math.min(this.maxRatio, r + 0.1);
     if (Math.abs(r - this.renderer.pixelRatio) > 0.01) { this.renderer.setPixelRatio(r); this.frameTimes.length = 0; }
   }
 

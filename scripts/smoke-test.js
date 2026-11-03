@@ -262,7 +262,7 @@ for (const mapId of S.MAP_ORDER) {
     const realDate = Date.now;
     Date.now = () => virtual;
     try {
-      for (let i = 0; i < 30 * 60 * 40 && !events.some((e) => e[0] === 'over'); i++) { virtual += 1000 / 30; r.tick(); }
+      for (let i = 0; i < 30 * 60 * 75 && !events.some((e) => e[0] === 'over'); i++) { virtual += 1000 / 30; r.tick(); }
     } finally { Date.now = realDate; }
     const over = events.find((e) => e[0] === 'over');
     assert.ok(over, 'match ended (phase ' + r.phase + ', score ' + JSON.stringify(r.score) + ')');

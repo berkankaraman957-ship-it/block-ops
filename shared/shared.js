@@ -15,7 +15,7 @@
   // CONFIG
   // ---------------------------------------------------------------------------
   const CONFIG = {
-    VERSION: '2.3.0',
+    VERSION: '2.3.1',
     TICK_RATE: 30,            // server simulation + snapshot rate (Hz)
     INPUT_RATE: 60,           // client fixed input/physics step (Hz)
     INTERP_DELAY_MS: 100,     // base remote interpolation delay (client adapts to jitter)

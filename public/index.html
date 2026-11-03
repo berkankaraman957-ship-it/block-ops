@@ -15,6 +15,31 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <!-- ================= SPLASH (shown instantly, before any JS loads) ================= -->
+  <div id="splash">
+    <div class="sp-sky"></div>
+    <div class="sp-sun"></div>
+    <div class="sp-grid"></div>
+    <div class="sp-cubes">
+      <div class="cube c1"><i></i><i></i><i></i></div>
+      <div class="cube c2"><i></i><i></i><i></i></div>
+      <div class="cube c3"><i></i><i></i><i></i></div>
+      <div class="cube c4"><i></i><i></i><i></i></div>
+      <div class="cube c5"><i></i><i></i><i></i></div>
+      <div class="cube c6"><i></i><i></i><i></i></div>
+    </div>
+    <div class="sp-center">
+      <div class="sp-badge">5v5 · TAKTİKSEL NİŞANCI</div>
+      <div class="sp-logo"><span class="w1">BLOCK</span><span class="w2">OPS</span></div>
+      <div class="sp-sub">TACTICAL DRIFT</div>
+      <div class="sp-teams"><span class="t">SALDIRI</span><b>VS</b><span class="ct">SAVUNMA</span></div>
+    </div>
+    <div class="sp-bottom">
+      <div class="sp-tip" id="spTip">Bombayı kurmak için bölgede E tuşuna basılı tut</div>
+      <div class="sp-bar"><i id="spBar"></i></div>
+      <div class="sp-status"><span id="spStatus">YÜKLENİYOR</span><span id="spPct">0%</span></div>
+    </div>
+  </div>
   <canvas id="game"></canvas>
   <div id="tags"></div>
   <div id="vignette"></div>

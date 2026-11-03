@@ -930,6 +930,7 @@ class Game {
     try {
       if (this.inGame) this.updateGame(dt, t); else this.updateMenu(dt);
       this.render(dt);
+      if (!window.__splash.done) window.__splash.tick(this);
     } catch (err) {
       console.error(err);
       if (!this._errShown) { this._errShown = true; this.hud.centerMsg('Hata: ' + err.message, 8000); }
@@ -1384,6 +1385,56 @@ class Game {
 }
 
 // ---------------------------------------------------------------------------
+// SPLASH: tips + real loading progress, fades into the menu when the world is built
+// ---------------------------------------------------------------------------
+const Splash = {
+  t0: performance.now(), done: false, pct: 4,
+  tips: [
+    'Bombayı kurmak için bölgede E tuşuna basılı tut',
+    'Yerdeki silahı E ile al, G ile kendi silahını at',
+    'Sesli sohbet: V tuşuna basılı tutarak takımınla konuş',
+    'Arkadaş kodunu paylaş, tek dokunuşla maça davet et',
+    'Shift ile yürürsen düşmanlar ayak sesini duymaz',
+    'Sandıkların ve tahtaların arkasından ateş edebilirsin — mermi deler',
+    'Flaş bombası ona bakan herkesi kör eder, arkanı dön!',
+    'Sis bombası botların görüşünü de keser',
+    'Ayarlar → Butonları Düzenle ile kontrolleri kendine göre yerleştir'
+  ],
+  set(p, status) {
+    this.pct = Math.max(this.pct, Math.min(100, p));
+    const bar = $('spBar'); if (bar) bar.style.width = this.pct.toFixed(0) + '%';
+    const pc = $('spPct'); if (pc) pc.textContent = this.pct.toFixed(0) + '%';
+    if (status) { const st = $('spStatus'); if (st) st.textContent = status; }
+  },
+  tick(game) {
+    if (this.done) return;
+    const total = game.worldR.chunks.length;
+    const built = total - game.worldR.dirty.size;
+    const elapsed = performance.now() - this.t0;
+    // 0-30% boot, 30-95% world meshing, then a short minimum display time
+    this.set(30 + 65 * (built / total), built < total ? 'HARİTA OLUŞTURULUYOR' : 'HAZIRLANIYOR');
+    if (built >= total && elapsed > 2600) this.finish();
+  },
+  finish() {
+    if (this.done) return;
+    this.done = true;
+    this.set(100, 'HAZIR');
+    setTimeout(() => {
+      const el = $('splash');
+      if (el) { el.classList.add('out'); setTimeout(() => el.remove(), 900); }
+    }, 250);
+  }
+};
+{
+  let i = Math.floor(Math.random() * Splash.tips.length);
+  const showTip = () => { const el = $('spTip'); if (el) el.textContent = '💡 ' + Splash.tips[i++ % Splash.tips.length]; };
+  showTip();
+  const tipTimer = setInterval(() => { if (Splash.done) clearInterval(tipTimer); else showTip(); }, 2200);
+  Splash.set(18, 'MOTOR BAŞLATILIYOR');
+}
+window.__splash = Splash;
+
+// ---------------------------------------------------------------------------
 // INSTALLABLE APP (PWA): service worker + install button / iOS guide
 // ---------------------------------------------------------------------------
 const standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) ||
@@ -1456,9 +1507,11 @@ if (!isNativeApp) {
 // ---------------------------------------------------------------------------
 // BOOT
 // ---------------------------------------------------------------------------
+setTimeout(() => window.__splash && window.__splash.finish(), 12000);
 try {
   window.game = new Game();
 } catch (err) {
+  Splash.finish();
   console.error(err);
   $('fatal').classList.remove('hidden');
   $('fatalText').textContent = 'Oyun başlatılamadı: ' + err.message + '. Cihazınız WebGL2 desteklemiyor olabilir.';

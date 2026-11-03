@@ -46,6 +46,7 @@ class Game {
     this.minRatio = q === 'auto' ? 0.5 : this.maxRatio;
     this.renderer = new Renderer(this.canvas, { antialias: q === 'high', pixelRatio: this.maxRatio });
     this.frameTimes = []; this.lastScaleCheck = performance.now();
+    this.detectGpu();
     this.opaque = new BoxBatch(this.renderer, 2048);
     this.alphaBatch = new BoxBatch(this.renderer, 512);
     this.addBatch = new BoxBatch(this.renderer, 512);
@@ -123,6 +124,31 @@ class Game {
     const out = [];
     for (let i = 0; i < 22; i++) out.push({ x: rng() * 200 - 70, y: 48 + rng() * 8, z: rng() * 200 - 70, sx: 8 + rng() * 14, sz: 6 + rng() * 10 });
     return out;
+  }
+
+  /**
+   * Detect software rendering (browser hardware acceleration off / no GPU driver).
+   * That is the #1 cause of extreme lag: the game is then drawn by the CPU at 1-10 FPS.
+   */
+  detectGpu() {
+    const gl = this.renderer.gl;
+    let name = '';
+    try {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      name = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    } catch (e) { name = ''; }
+    this.gpuName = String(name || 'bilinmiyor');
+    this.softwareGpu = /swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/i.test(this.gpuName);
+    if (this.softwareGpu) {
+      // keep it playable as much as possible
+      this.maxRatio = 0.6; this.minRatio = 0.45;
+      this.renderer.setPixelRatio(0.6);
+      const w = $('gpuWarn');
+      w.classList.remove('hidden');
+      w.innerHTML = '⚠ <b>Ekran kartı kullanılmıyor</b> — oyun işlemcide çiziliyor, bu yüzden çok kasar.<br>' +
+        'Chrome/Edge: <b>Ayarlar → Sistem → "Mümkün olduğunda grafik hızlandırmayı kullan"</b> seçeneğini AÇ ve tarayıcıyı yeniden başlat.<br>' +
+        '<small>Algılanan: ' + this.gpuName.replace(/[<>&]/g, '') + '</small>';
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -952,8 +978,15 @@ class Game {
       iCarryBomb: !!(b && b.s === 'carried' && b.c === this.myId), aliveT, aliveCT, totalT, totalCT, progress, flash,
       spec: this.alive ? null : spec
     });
+    if (this.fps && this.fps < 25 && this.phase !== 'gameover') {
+      this.lowFpsTime = (this.lowFpsTime || 0) + dt;
+      if (this.lowFpsTime > 6 && !this.lowFpsWarned) {
+        this.lowFpsWarned = true;
+        this.hud.centerMsg(this.softwareGpu ? '⚠ Ekran kartı kapalı: tarayıcı ayarlarından donanım hızlandırmayı aç' : `⚠ Düşük FPS (${this.fps}). Menü → Ayarlar → Kalite: Düşük deneyebilirsin`, 9000);
+      }
+    } else this.lowFpsTime = 0;
     if (this.showStats) {
-      this.hud.stats(`FPS ${this.fps}  ping ${Math.round(this.net.rtt)} ms  interp ${Math.round(this.interpDelay)} ms\nçözünürlük x${this.renderer.pixelRatio.toFixed(2)}  draws ${this.renderer.stats.draws}  inst ${this.renderer.stats.instances}\nüçgen ${Math.round(this.renderer.stats.tris)}  pos ${this.me.x.toFixed(1)} ${this.me.z.toFixed(1)}`);
+      this.hud.stats(`GPU ${this.gpuName.slice(0, 48)}\nFPS ${this.fps}  ping ${Math.round(this.net.rtt)} ms  interp ${Math.round(this.interpDelay)} ms\nçözünürlük x${this.renderer.pixelRatio.toFixed(2)}  draws ${this.renderer.stats.draws}  inst ${this.renderer.stats.instances}\nüçgen ${Math.round(this.renderer.stats.tris)}  pos ${this.me.x.toFixed(1)} ${this.me.z.toFixed(1)}`);
     }
   }
 

@@ -52,7 +52,10 @@ function publicView(p) {
 class SupabaseBackend {
   constructor(url, key) {
     this.base = url.replace(/\/$/, '') + '/rest/v1';
-    this.headers = { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' };
+    // New-style keys (sb_secret_…) are not JWTs: send them only as `apikey`.
+    // Legacy service_role keys (JWT) also go in the Authorization header.
+    this.headers = key.startsWith('sb_') ? { apikey: key, 'Content-Type': 'application/json' }
+      : { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' };
     this.name = 'supabase';
   }
   async req(method, p, body, extra) {

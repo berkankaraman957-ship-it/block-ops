@@ -229,6 +229,7 @@ class Store {
     } else {
       if (!WEAPONS[weaponId] || WEAPONS[weaponId].grenade) return { ok: false, err: 'Geçersiz silah' };
       if (itemId && (!C.SKINS[itemId] || !p.inventory.includes(itemId))) return { ok: false, err: 'Bu kaplama sende yok' };
+      if (itemId && C.SKINS[itemId].weapon !== weaponId) return { ok: false, err: 'Bu kaplama başka bir silaha ait' };
       if (!itemId) delete p.equipped[weaponId]; else p.equipped[weaponId] = itemId;
     }
     this.touch(p);

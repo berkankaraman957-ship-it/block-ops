@@ -37,7 +37,7 @@ Tarayıcıda aç → **HIZLI OYNA**. "Bot Sayısı = 9" ile tek başına tam 5v5
 
 **Hesap + profil:** İlk açılışta otomatik hesap (arkadaş kodu + cihazda saklanan gizli anahtar, e-posta yok). Seviye/XP, Blok Coin, rütbe (Bronz → Usta), istatistikler, son 10 maç. Hesap anahtarı ile başka cihaza taşıma, uygulama içinden hesap silme (mağaza şartı).
 
-**Mağaza (adil):** 16 silah kaplaması + 6 ajan rozeti. Tamamen görsel — hasar/isabet/hız/ses değişmez, takım renkleri hep okunur. Blok Coin şimdilik oynayarak kazanılır; gerçek para paketleri `server/store.js → grantCoins` kancasıyla, mağaza fatura doğrulamasından sonra bağlanacak.
+**Mağaza (adil):** her silaha özel 5'li koleksiyon (toplam 85 kaplama) + 6 ajan rozeti. Tamamen görsel — hasar/isabet/hız/ses değişmez, takım renkleri hep okunur. Blok Coin şimdilik oynayarak kazanılır; gerçek para paketleri `server/store.js → grantCoins` kancasıyla, mağaza fatura doğrulamasından sonra bağlanacak.
 
 **Modlar:** Rekabetçi · Dereceli (rütbe puanı, terk cezası) · Ölüm Maçı · Silah Oyunu · Sadece Bıçak · 1v1 Düello. Maç sonunda harita oylaması. 2 yeni harita: Citadel, Neon District.
 

@@ -37,7 +37,17 @@ export function applySkin(root, skinId) {
     switch (sk.mode) {
       case 'camo': col = mul(pal[((i * 2654435761) >>> 0) % pal.length], 0.78 + L * 0.8); break;
       case 'two': col = mul(i % 3 === 1 ? pal[1] : pal[0], 0.62 + L * 1.3); break;
+      case 'stripes': col = mul(pal[i % pal.length], 0.7 + L * 1.0); break;
+      case 'split': {
+        const f = zmax > zmin ? (z - zmin) / (zmax - zmin) : 0;
+        col = mul(f < 0.5 ? pal[0] : pal[1], 0.65 + L * 1.2);
+        break;
+      }
       case 'metal': col = mul(pal[0], 0.72 + L * 1.1); b.e = 0.12; break;
+      case 'metal2':
+        if (i % 3 === 1) col = mul(pal[1], 0.8 + L * 0.8);
+        else { col = mul(pal[0], 0.72 + L * 1.1); b.e = 0.12; }
+        break;
       case 'neon':
         if (i % 3 === 1) { col = pal[1]; b.e = 0.7; } else col = mul(pal[0], 0.85 + L * 0.8);
         break;

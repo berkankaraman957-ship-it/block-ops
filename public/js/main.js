@@ -166,7 +166,7 @@ class Game {
     this.friends.connect(this.lobbyUrl);
     this.pollOnline();
     setInterval(() => this.pollOnline(), 20000);
-    $('newsBody').innerHTML = '<b>v' + CONFIG.VERSION + '</b> · 🎖 Profil, seviye, rütbe<br>🛒 Silah kaplamaları (sadece görünüm)<br>🏆 Dereceli · ☠ Ölüm Maçı · 🔫 Silah Oyunu · 🔪 Bıçak · ⚔ 1v1<br>🔥 Molotof + 💥 duvar kıran C4<br>🗺 2 yeni harita + harita oylaması<br>🎥 Leş kamerası · 🎉 Parti sistemi';
+    $('newsBody').innerHTML = '<b>v' + CONFIG.VERSION + '</b> · 🎖 Profil, seviye, rütbe<br>🛒 Her silaha özel kaplama koleksiyonu (85 kaplama)<br>🏆 Dereceli · ☠ Ölüm Maçı · 🔫 Silah Oyunu · 🔪 Bıçak · ⚔ 1v1<br>🔥 Molotof + 💥 duvar kıran C4<br>🗺 2 yeni harita + harita oylaması<br>🎥 Leş kamerası · 🎉 Parti sistemi';
     this.applyShowcaseCosmetics();
     window.addEventListener('resize', () => this.renderer.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.renderer.resize(), 200));

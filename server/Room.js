@@ -15,7 +15,6 @@ const BotBrain = require('./Bot');
 
 const { CONFIG, WEAPONS, ITEMS, BLOCK, BLOCK_INFO, BTN, DIFFICULTY, MODES, GRENADE_ORDER } = S;
 const COS = require('../shared/cosmetics.js');
-const SKIN_IDS = Object.keys(COS.SKINS);
 const RESPAWN_MS = 2000, PROTECT_MS = 1500, FIRE_TICK_MS = 250;
 const emptyNades = () => ({ he: 0, flash: 0, smoke: 0, molotov: 0, breach: 0 });
 const R = CONFIG.ROUND, E = CONFIG.ECON, BB = CONFIG.BOMB, GN = CONFIG.GRENADE;
@@ -125,7 +124,11 @@ class Room {
     const id = 'bot_' + numCounter + '_' + Math.random().toString(36).slice(2, 6);
     const p = this.createPlayer(id, 'BOT ' + base, true, null);
     // bots show off a random cosmetic now and then (purely visual)
-    if (Math.random() < 0.45) p.equip = { '*': SKIN_IDS[Math.floor(Math.random() * SKIN_IDS.length)] };
+    p.equip = {};
+    for (const wid of Object.keys(COS.COLLECTIONS)) {
+      const list = COS.skinsFor(wid);
+      if (Math.random() < 0.3) p.equip[wid] = list[Math.floor(Math.random() * list.length)].id;
+    }
     this.players.set(id, p);
     this.bots.set(id, new BotBrain(this, p));
     this.assignTeam(p, t);

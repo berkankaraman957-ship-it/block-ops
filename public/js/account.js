@@ -130,7 +130,7 @@ export class Account {
   bindUI() {
     const sel = $('storeWeapon');
     const order = C.skinnable(S.WEAPONS).sort((a, b) => (S.WEAPONS[a].slot - S.WEAPONS[b].slot) || a.localeCompare(b));
-    sel.innerHTML = order.map((id) => `<option value="${id}">${esc(S.WEAPONS[id].name)}</option>`).join('');
+    sel.innerHTML = order.map((id) => { return `<option value="${id}">${esc(S.WEAPONS[id].name)} — ${C.skinsFor(id).length} kaplama</option>`; }).join('');
     sel.value = this.weapon;
     sel.addEventListener('change', () => { this.weapon = sel.value; this.renderStore(); });
     const filters = [['all', 'HEPSİ'], ['owned', 'SENDE OLANLAR'], ['common', 'SIRADAN'], ['rare', 'NADİR'], ['epic', 'EPİK'], ['legendary', 'EFSANEVİ']];
@@ -211,7 +211,7 @@ export class Account {
     const wid = this.weapon;
     const equipped = this.equippedFor(wid);
     skinPreview($('storePreview'), wid, this.previewSkin !== undefined ? this.previewSkin : equipped);
-    const items = [{ id: '', name: 'Varsayılan', rarity: 'common', price: 0 }].concat(Object.values(C.SKINS))
+    const items = [{ id: '', name: 'Varsayılan', rarity: 'common', price: 0 }].concat(C.skinsFor(wid))
       .filter((sk) => {
         if (this.filter === 'all') return true;
         if (this.filter === 'owned') return sk.id === '' || this.owns(sk.id);
@@ -243,7 +243,7 @@ export class Account {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           if (!can) { this.msg(`Yetersiz Blok Coin (${sk.price} gerekli). Maç oynayarak kazanabilirsin!`, false); return; }
-          if (confirm(`"${sk.name}" kaplamasını ${sk.price} Blok Coin'e satın al? (Tüm silahlarda kullanılabilir)`)) this.buy(sk.id, 'skin');
+          if (confirm(`${S.WEAPONS[wid].name} | "${sk.name}" kaplamasını ${sk.price} Blok Coin'e satın al?`)) this.buy(sk.id, 'skin');
         });
       }
       card.appendChild(btn);

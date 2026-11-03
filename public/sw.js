@@ -3,7 +3,7 @@
  * no browser bar) and caches the game shell so it opens instantly.
  * Realtime traffic (Socket.io / WebSocket) is never cached.
  */
-const CACHE = 'blockops-v2.0.2';
+const CACHE = 'blockops-v2.0.3';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'config.js', 'manifest.webmanifest',
   'shared/shared.js', 'shared/maps.js', 'vendor/socket.io.min.js',
@@ -27,10 +27,10 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  if (url.pathname.startsWith('/socket.io') || url.pathname.startsWith('/shim-ws') || url.pathname === '/health') return;
+  if (url.pathname.startsWith('/socket.io') || url.pathname.startsWith('/shim-ws') || url.pathname === '/health' || url.pathname === '/version') return;
   // network-first so updates arrive immediately; cache as offline fallback
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then((res) => {
         if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
         return res;

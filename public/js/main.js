@@ -484,7 +484,8 @@ class Game {
     n.on('disconnect', () => {
       if (!this.inGame) return;
       this.leave();
-      $('menuErr').textContent = 'Sunucu bağlantısı koptu.';
+      $('menuErr').textContent = 'Sunucu bağlantısı koptu (güncelleme yükleniyor olabilir).';
+      setTimeout(() => Updater.check(), 5000); setTimeout(() => Updater.check(), 30000);
     });
   }
 
@@ -1205,6 +1206,49 @@ window.addEventListener('appinstalled', () => $('btnInstall').classList.add('hid
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 if (isIOS && !standalone && !isNativeApp) $('iosHint').classList.remove('hidden');
 if (standalone && screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
+
+// ---------------------------------------------------------------------------
+// UPDATE CHECK: polls /version; when a new deploy is live, show the update button.
+// ---------------------------------------------------------------------------
+const Updater = {
+  build: null, dismissed: null,
+  base() {
+    if (location.protocol.startsWith('http')) return '';
+    const s = (window.BLOCKOPS_CONFIG && window.BLOCKOPS_CONFIG.serverUrl) || '';
+    return s.replace(/\/$/, '');
+  },
+  async check() {
+    try {
+      const r = await fetch(this.base() + '/version?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const v = await r.json();
+      if (!this.build) { this.build = v.build; return; }
+      if (v.build !== this.build && v.build !== this.dismissed) this.show(v);
+    } catch (e) { /* offline / server waking up */ }
+  },
+  show(v) {
+    const inGame = window.game && window.game.inGame;
+    $('updateNote').textContent = inGame ? '(maçtan çıkıp yeniden yüklenir)' : 'v' + v.version;
+    $('updateBar').classList.remove('hidden');
+    this.latest = v.build;
+  },
+  async apply() {
+    $('btnUpdate').textContent = 'YÜKLENİYOR...';
+    try {
+      if ('caches' in window) for (const k of await caches.keys()) await caches.delete(k);
+      if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.update().catch(() => {});
+    } catch (e) { /* ignore */ }
+    location.reload();
+  }
+};
+window.__updater = Updater;
+$('btnUpdate').addEventListener('click', () => Updater.apply());
+$('btnUpdateLater').addEventListener('click', () => { Updater.dismissed = Updater.latest; $('updateBar').classList.add('hidden'); });
+if (!isNativeApp) {
+  Updater.check();
+  setInterval(() => Updater.check(), 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) Updater.check(); });
+}
 
 // ---------------------------------------------------------------------------
 // BOOT

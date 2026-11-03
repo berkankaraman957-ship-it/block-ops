@@ -7,6 +7,7 @@
  *   CORS_ORIGIN="capacitor://localhost,http://localhost,https://yourdomain.com"
  */
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const Room = require('./Room');
@@ -63,6 +64,21 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// Build id: hash of every client file. Clients poll /version and show an
+// "update available" button as soon as a new deploy is live.
+// ---------------------------------------------------------------------------
+function hashDir(dir, h) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const f = path.join(dir, e.name);
+    if (e.isDirectory()) hashDir(f, h);
+    else { h.update(e.name); h.update(fs.readFileSync(f)); }
+  }
+  return h;
+}
+const BUILD_ID = hashDir(SHARED_DIR, hashDir(PUBLIC_DIR, crypto.createHash('sha1'))).digest('hex').slice(0, 12);
+const BUILD_TIME = new Date().toISOString();
+
+// ---------------------------------------------------------------------------
 // Static file server
 // ---------------------------------------------------------------------------
 const MIME = {
@@ -72,13 +88,17 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8'
 };
 
-function sendFile(res, file, cache) {
+function sendFile(res, file, cache, req) {
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('404'); return; }
+    // Always revalidate (ETag): updates reach players immediately, unchanged files cost a tiny 304.
+    const etag = '"' + BUILD_ID + '-' + st.size.toString(36) + '-' + Math.floor(st.mtimeMs).toString(36) + '"';
+    if (req && req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' }); res.end(); return; }
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
       'Content-Length': st.size,
-      'Cache-Control': cache && !file.endsWith('sw.js') ? 'public, max-age=3600' : 'no-cache',
+      'Cache-Control': 'no-cache',
+      ETag: etag,
       'X-Content-Type-Options': 'nosniff'
     });
     fs.createReadStream(file).pipe(res);
@@ -98,15 +118,20 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, version: S.CONFIG.VERSION, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
     return;
   }
-  if (url === '/vendor/socket.io.min.js') return sendFile(res, clientBundlePath, true);
+  if (url === '/version') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ build: BUILD_ID, version: S.CONFIG.VERSION, time: BUILD_TIME }));
+    return;
+  }
+  if (url === '/vendor/socket.io.min.js') return sendFile(res, clientBundlePath, true, req);
   if (url.startsWith('/shared/')) {
     const f = safeJoin(SHARED_DIR, url.slice('/shared/'.length));
-    return f ? sendFile(res, f, false) : (res.writeHead(403), res.end());
+    return f ? sendFile(res, f, false, req) : (res.writeHead(403), res.end());
   }
   if (url === '/' || url === '') url = '/index.html';
   const f = safeJoin(PUBLIC_DIR, url);
   if (!f) { res.writeHead(403); res.end(); return; }
-  sendFile(res, f, !url.endsWith('.html'));
+  sendFile(res, f, !url.endsWith('.html'), req);
 });
 
 // ---------------------------------------------------------------------------
@@ -232,7 +257,7 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`BLOCK OPS server listening on http://localhost:${PORT}`);
+  console.log(`BLOCK OPS server listening on http://localhost:${PORT}  (build ${BUILD_ID})`);
   // Print LAN addresses so friends on the same Wi-Fi can join
   const nets = require('os').networkInterfaces();
   for (const list of Object.values(nets)) {

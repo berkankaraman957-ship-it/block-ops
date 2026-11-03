@@ -9,6 +9,7 @@ const { WebSocketServer } = require('ws');
 function createServer(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: '/shim-ws' });
   const rooms = new Map();
+  const all = new Map();
   const handlers = {};
   let idc = 0;
 
@@ -42,7 +43,8 @@ function createServer(httpServer) {
         const fn = acks.get(m[1]); if (fn) { acks.delete(m[1]); fn(...(m[2] || [])); }
       }
     });
-    ws.on('close', () => { for (const r of [...socket.rooms]) socket.leave(r); socket._fire('disconnect', ['transport close']); });
+    ws.on('close', () => { all.delete(socket.id); for (const r of [...socket.rooms]) socket.leave(r); socket._fire('disconnect', ['transport close']); });
+    all.set(socket.id, socket);
     return socket;
   }
 
@@ -52,6 +54,7 @@ function createServer(httpServer) {
   });
 
   return {
+    sockets: { sockets: all },
     on(ev, fn) { (handlers[ev] = handlers[ev] || []).push(fn); },
     to(room) {
       return { emit(ev, ...args) { const set = rooms.get(room); if (set) for (const s of set) s.emit(ev, ...args); } };

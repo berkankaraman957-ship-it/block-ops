@@ -185,6 +185,14 @@ function program(gl, vs, fs) {
   return { p, u };
 }
 
+const GRADE_GLSL = `
+uniform float uSat;
+vec3 grade(vec3 c) {
+  float l = dot(c, vec3(0.299, 0.587, 0.114));
+  c = mix(vec3(l), c, uSat);
+  c = (c - 0.5) * 1.06 + 0.52;
+  return max(c, vec3(0.0));
+}`;
 const LIGHTS_GLSL = `
 uniform vec4 uLights[4];   // xyz pos, w intensity
 uniform vec3 uLightCol[4];
@@ -223,10 +231,11 @@ in vec3 vUV; in vec3 vCol; in float vFog; in vec3 vWP; in vec3 vN;
 uniform sampler2DArray uTex;
 uniform vec3 uFogCol;
 ${LIGHTS_GLSL}
+${GRADE_GLSL}
 out vec4 o;
 void main() {
   vec3 t = texture(uTex, vUV).rgb;
-  vec3 c = t * (vCol + flashLight(vWP, vN));
+  vec3 c = grade(t * (vCol + flashLight(vWP, vN)));
   o = vec4(mix(c, uFogCol, vFog), 1.0);
 }`;
 
@@ -261,8 +270,9 @@ const BOX_FS = `#version 300 es
 precision mediump float;
 in vec4 vCol; in float vFog;
 uniform vec3 uFogCol;
+${GRADE_GLSL}
 out vec4 o;
-void main() { o = vec4(mix(vCol.rgb, uFogCol, vFog), vCol.a); }`;
+void main() { o = vec4(mix(grade(vCol.rgb), uFogCol, vFog), vCol.a); }`;
 
 const SKY_VS = `#version 300 es
 layout(location=0) in vec2 aPos;
@@ -446,6 +456,7 @@ export class Renderer {
     this.lightCols = new Float32Array(12);
     this.lightCount = 0;
     this.dynamicLights = true;
+    this.saturation = 1.12;
     this.stats = { draws: 0, instances: 0, tris: 0 };
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
@@ -518,6 +529,7 @@ export class Renderer {
     gl.uniform4fv(P.u.uLights, this.lights);
     gl.uniform3fv(P.u.uLightCol, this.lightCols);
     gl.uniform1i(P.u.uLightCount, this.lightCount);
+    gl.uniform1f(P.u.uSat, this.saturation);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
     gl.uniform1i(P.u.uTex, 0);
@@ -534,6 +546,7 @@ export class Renderer {
     gl.uniform4fv(P.u.uLights, (opts && opts.noLights) ? this.zeroLights : this.lights);
     gl.uniform3fv(P.u.uLightCol, this.lightCols);
     gl.uniform1i(P.u.uLightCount, (opts && opts.noLights) ? 0 : this.lightCount);
+    gl.uniform1f(P.u.uSat, this.saturation);
   }
   setBlend(mode) {
     const gl = this.gl;

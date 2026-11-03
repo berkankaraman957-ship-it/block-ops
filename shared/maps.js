@@ -82,6 +82,13 @@
       box(12, 1, 11, 14, 1, 11, B.SAND); box(50, 1, 11, 52, 1, 11, B.SAND);
       // awnings / decor
       box(14, 7, 24, 14, 7, 28, B.PLANK); box(50, 7, 19, 50, 7, 23, B.PLANK);
+      // windows on the big blocks (facing the lanes)
+      for (let z = 15; z <= 35; z += 5) { box(15, 3, z, 15, 4, z + 1, B.WINDOW); box(26, 3, z, 26, 4, z + 1, B.WINDOW); box(38, 3, z, 38, 4, z + 1, B.WINDOW); box(49, 3, z, 49, 4, z + 1, B.WINDOW); }
+      box(21, 3, 46, 21, 4, 47, B.WINDOW); box(43, 3, 46, 43, 4, 47, B.WINDOW);
+      // wall lamps
+      for (const [x, y, z] of [[14, 5, 26], [27, 5, 22], [37, 5, 22], [50, 5, 21], [20, 5, 45], [44, 5, 45], [31, 4, 36], [33, 4, 36]]) box(x, y, z, x, y, z, B.LAMP);
+      // rooftop details
+      box(17, 7, 30, 18, 7, 31, B.METAL); box(45, 7, 15, 46, 7, 16, B.METAL); box(24, 7, 47, 25, 8, 48, B.BRICK);
     }
   });
 
@@ -141,6 +148,13 @@
       box(10, 1, 56, 15, 2, 58, B.CONT_R); box(44, 1, 57, 45, 1, 58, B.CRATE);
       // bollards on the dock edge
       for (let z = 14; z <= 50; z += 6) box(1, 1, z, 1, 1, z, B.METAL);
+      // office windows + warehouse lights + yard lamp posts
+      for (let x = 25; x <= 37; x += 3) { box(x, 3, 44, x + 1, 4, 44, B.WINDOW); box(x, 3, 50, x + 1, 4, 50, B.WINDOW); }
+      for (let z = 37; z <= 49; z += 4) box(40, 4, z, 40, 4, z, B.WINDOW);
+      for (const [x, z] of [[44, 38], [57, 38], [44, 49], [57, 49], [50, 43]]) box(x, 6, z, x, 6, z, B.LAMP);
+      for (const [x, z] of [[24, 13], [37, 39], [3, 38], [60, 33], [20, 53], [45, 53]]) { box(x, 1, z, x, 6, z, B.METAL); box(x, 7, z, x, 7, z, B.LAMP); }
+      // ground markings (yellow lines) on the asphalt
+      for (let z = 13; z <= 39; z += 3) box(31, 0, z, 31, 0, z + 1, B.SAND);
     }
   });
 
@@ -195,6 +209,9 @@
       box(55, 1, 46, 56, 2, 47, B.CRATE);
       box(50, 1, 49, 51, 2, 49, B.STONE);
       tree(box, 59, 51, 5);
+      // lanterns + windows
+      for (const [x, y, z] of [[9, 4, 17], [53, 4, 21], [31, 4, 46], [32, 4, 54], [30, 4, 17], [33, 4, 45]]) box(x, y, z, x, y, z, B.LAMP);
+      box(24, 2, 48, 24, 3, 48, B.WINDOW); box(40, 2, 48, 40, 3, 48, B.WINDOW);
       // spawns
       tree(box, 20, 5, 4); tree(box, 45, 7, 5); box(14, 1, 3, 15, 1, 4, B.CRATE);
       tree(box, 20, 58, 4); tree(box, 46, 59, 4); box(50, 1, 56, 51, 1, 57, B.CRATE);

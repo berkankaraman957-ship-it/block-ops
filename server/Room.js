@@ -19,6 +19,9 @@ const R = CONFIG.ROUND, E = CONFIG.ECON, BB = CONFIG.BOMB, GN = CONFIG.GRENADE;
 const BOT_NAMES = ['Ayaz', 'Kartal', 'Bora', 'Toprak', 'Demir', 'Atlas', 'Poyraz', 'Tuna', 'Yiğit', 'Arda', 'Kaya', 'Alp', 'Doruk', 'Efe'];
 let numCounter = 1;
 let nadeCounter = 1;
+let dropCounter = 1;
+const MAX_DROPS = 30;
+const PICKUP_RANGE = 1.25;
 
 const r2 = (v) => Math.round(v * 100) / 100;
 const r3 = (v) => Math.round(v * 1000) / 1000;
@@ -47,6 +50,7 @@ class Room {
     this.botPlan = { site: 'A' };
     this.nades = [];
     this.smokes = [];
+    this.drops = [];
     this.tickCount = 0;
     this.lastTickReal = Date.now();
     this.timer = setInterval(() => this.safeTick(), 1000 / CONFIG.TICK_RATE);
@@ -239,6 +243,7 @@ class Room {
       if (cur && cur.id === item) return reply(false, 'Zaten sende var');
       if (p.money < w.price) return reply(false, 'Yetersiz bakiye');
       p.money -= w.price;
+      if (cur) this.spawnDrop(p, cur, false);
       p.weapons[w.slot] = { id: item, ammo: w.mag, reserve: w.reserve };
       this.switchSlot(p, w.slot, true);
       return reply(true, `${w.name} satın alındı`);
@@ -353,6 +358,68 @@ class Room {
       n: normal, bt, hp: hitAny ? 1 : 0
     });
     if (ws.ammo === 0 && ws.reserve > 0 && !w.melee) p.reloadEnd = now + w.reload * 1000 + 250;
+  }
+
+  // -------------------------------------------------------------------------
+  // DROPPED WEAPONS (CS-style: drop on death, G to throw, walk over / E to pick up)
+  // -------------------------------------------------------------------------
+  spawnDrop(p, ws, thrown) {
+    if (!ws || !WEAPONS[ws.id] || WEAPONS[ws.id].melee) return null;
+    const dir = S.anglesToDir(p.yaw, thrown ? 0.25 : 0);
+    const sp = thrown ? 5.5 : 1.2;
+    const d = {
+      id: dropCounter++, wid: ws.id, ammo: ws.ammo, reserve: ws.reserve, by: p.id, t0: this.now(),
+      x: p.x + dir[0] * 0.3, y: p.y + (thrown ? 1.4 : 0.9), z: p.z + dir[2] * 0.3,
+      vx: dir[0] * sp + p.vx * 0.5, vy: thrown ? 2.5 : 1.5, vz: dir[2] * sp + p.vz * 0.5, yaw: p.yaw + (Math.random() - 0.5)
+    };
+    if (this.world.isSolid(Math.floor(d.x), Math.floor(d.y), Math.floor(d.z))) { d.x = p.x; d.z = p.z; }
+    this.drops.push(d);
+    if (this.drops.length > MAX_DROPS) this.drops.shift();
+    return d;
+  }
+  onDropWeapon(p) {
+    if (!p.alive || (p.slot !== 1 && p.slot !== 2)) return;
+    const ws = p.weapons[p.slot];
+    if (!ws) return;
+    this.spawnDrop(p, ws, true);
+    p.weapons[p.slot] = null;
+    p.reloadEnd = 0; p.scoped = 0;
+    this.switchSlot(p, p.weapons[1] ? 1 : p.weapons[2] ? 2 : 3, true);
+  }
+  canTake(p, d, now) {
+    if (!p.alive || p.team === 'SPEC') return false;
+    if (d.by === p.id && now - d.t0 < 1200) return false;   // don't instantly re-grab what you threw
+    return Math.hypot(p.x - d.x, p.z - d.z) < PICKUP_RANGE && Math.abs(p.y + 0.3 - d.y) < 1.6;
+  }
+  takeDrop(p, d) {
+    const w = WEAPONS[d.wid];
+    const slot = w.slot;
+    if (p.weapons[slot]) this.spawnDrop(p, p.weapons[slot], false);    // swap: drop what we hold in that slot
+    p.weapons[slot] = { id: d.wid, ammo: d.ammo, reserve: d.reserve };
+    this.drops.splice(this.drops.indexOf(d), 1);
+    this.switchSlot(p, slot, true);
+    if (p.socket) p.socket.emit('picked', { w: d.wid });
+  }
+  /** E near a weapon: swap with the one in the same slot */
+  onPickup(p, id) {
+    const now = this.now();
+    const d = this.drops.find((x) => x.id === id) || this.drops.find((x) => this.canTake(p, x, now));
+    if (d && this.canTake(p, d, now)) this.takeDrop(p, d);
+  }
+  updateDrops(now, dt) {
+    for (const d of this.drops) {
+      if (d.rest) continue;
+      S.stepGrenade(d, dt, this.world);
+    }
+    // auto pick-up into EMPTY slots (walking over a weapon)
+    for (const p of this.players.values()) {
+      if (!p.alive) continue;
+      for (let i = this.drops.length - 1; i >= 0; i--) {
+        const d = this.drops[i];
+        if (!this.canTake(p, d, now)) continue;
+        if (!p.weapons[WEAPONS[d.wid].slot]) { this.takeDrop(p, d); break; }
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -507,6 +574,7 @@ class Room {
   }
 
   damageBlock(x, y, z, amount) {
+    if (y <= 0) return;   // never open holes in the floor
     const type = this.world.get(x, y, z);
     const info = BLOCK_INFO[type];
     if (!info || info.hp <= 0) return;
@@ -585,6 +653,8 @@ class Room {
       const a = this.players.get(aid);
       if (a && dmg >= 41 && a.team !== victim.team) a.assists++;
     }
+    const best = victim.weapons[1] || victim.weapons[2];
+    if (best) this.spawnDrop(victim, best, false);
     victim.weapons = { 1: null, 2: null, 3: { id: 'knife', ammo: 0, reserve: 0 } };
     victim.nades = { he: 0, flash: 0, smoke: 0 };
     victim.armor = 0; victim.helmet = false; victim.kit = false;
@@ -611,6 +681,7 @@ class Room {
     this.pendingBlocks = [];
     this.nades = [];
     this.smokes = [];
+    this.drops = [];
     this.nav = S.buildNav(this.world);
     this.navVersion++;
     this.io.to(this.id).emit('wreset', { map: this.mapId });
@@ -836,7 +907,7 @@ class Room {
       }
       const site = S.siteAt(this.map, c.x, c.z);
       if (this.phase === 'live' && c.useHeld && site && c.onGround) {
-        if (!c.planting) c.planting = now;
+        if (!c.planting) c.planting = Math.max(1, now);
         if (now - c.planting >= BB.PLANT * 1000) this.plantBomb(c, site);
       } else c.planting = 0;
     } else if (b.state === 'dropped') {
@@ -863,7 +934,7 @@ class Room {
         for (const p of this.players.values()) if (inRange(p)) { def = p; break; }
         if (def) {
           b.defuser = def.id; b.defuseStart = now; b.defuseDur = (def.kit ? BB.DEFUSE_KIT : BB.DEFUSE) * 1000;
-          def.defusing = now;
+          def.defusing = Math.max(1, now);
           this.io.to(this.id).emit('bomb', { e: 'defusing', by: def.name, kit: def.kit ? 1 : 0 });
         }
       }
@@ -935,6 +1006,7 @@ class Room {
     }
 
     this.updateGrenades(now, elapsed || 1 / CONFIG.TICK_RATE);
+    if (this.drops.length) this.updateDrops(now, elapsed || 1 / CONFIG.TICK_RATE);
     this.updateGame(this.now());
 
     if (this.pendingBlocks.length) {
@@ -1018,6 +1090,7 @@ class Room {
       b: this.bombPublic(now), p: pubs
     };
     if (this.nades.length) base.g = this.nades.map((g) => [g.id, g.type, r2(g.x), r2(g.y), r2(g.z)]);
+    if (this.drops.length) base.d = this.drops.map((d) => [d.id, d.wid, r2(d.x), r2(d.y), r2(d.z), r2(d.yaw)]);
     if (this.smokes.length) base.sm = this.smokes.map((s) => [s.id, r2(s.x), r2(s.y), r2(s.z), s.t0]);
     if (this.tickCount % 15 === 1) base.r = this.roster();
     for (const p of this.players.values()) {
@@ -1027,6 +1100,12 @@ class Room {
   }
 
   broadcastMsg(text) { this.io.to(this.id).emit('msg', { text }); }
+  /** send to every human socket of a team (team chat / voice signalling) */
+  teamSockets(team, exceptId) {
+    const out = [];
+    for (const q of this.players.values()) if (q.socket && q.team === team && q.id !== exceptId) out.push(q.socket);
+    return out;
+  }
 
   initPayload(p) {
     return {

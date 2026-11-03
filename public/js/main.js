@@ -13,6 +13,9 @@ import { Sfx } from './audio.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { Net } from './net.js';
+import { Voice } from './voice.js';
+import { Friends } from './friends.js';
+import { LayoutEditor } from './layout.js';
 
 const S = window.SHARED;
 const { CONFIG, WEAPONS, BTN } = S;
@@ -23,9 +26,57 @@ const isTouch = (window.matchMedia && matchMedia('(pointer: coarse)').matches) |
 if (isTouch) document.body.classList.add('touch');
 
 // ---------------------------------------------------------------------------
+// GRAPHICS TIERS + DEVICE DETECTION
+// ---------------------------------------------------------------------------
+const TIERS = {
+  low: { label: 'Düşük', ratio: 0.75, msaa: false, particles: 150, smoke: 34, clouds: false, lights: false, fog: 0.75, sat: 1.06 },
+  medium: { label: 'Orta', ratio: 1.0, msaa: !isTouch, particles: 300, smoke: 50, clouds: true, lights: true, fog: 0.9, sat: 1.1 },
+  high: { label: 'Yüksek', ratio: 1.5, msaa: true, particles: 600, smoke: 70, clouds: true, lights: true, fog: 1.0, sat: 1.12 },
+  ultra: { label: 'Ultra', ratio: 2.0, msaa: true, particles: 900, smoke: 90, clouds: true, lights: true, fog: 1.25, sat: 1.15 }
+};
+const TIER_ORDER = ['low', 'medium', 'high', 'ultra'];
+function probeGpu() {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return '';
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
+    return String(r || '');
+  } catch (e) { return ''; }
+}
+/** Picks a graphics tier from the GPU name, RAM and CPU cores. */
+function detectTier(gpu) {
+  const g = gpu.toLowerCase();
+  const mem = navigator.deviceMemory || 0, cores = navigator.hardwareConcurrency || 4;
+  if (/swiftshader|llvmpipe|softpipe|software|basic render/.test(g)) return 'low';
+  let t;
+  if (isTouch) {
+    const adreno = /adreno[^0-9]*(\d{3})/.exec(g), mali = /mali-?g(\d+)/.exec(g);
+    if (/apple/.test(g) || /iphone|ipad/i.test(navigator.userAgent)) t = 'high';
+    else if (/xclipse|immortalis/.test(g)) t = 'high';
+    else if (adreno) { const n = +adreno[1]; t = n >= 730 ? 'ultra' : n >= 640 ? 'high' : n >= 610 ? 'medium' : 'low'; }
+    else if (mali) { const n = +mali[1]; t = n >= 710 || (n >= 76 && n < 100) ? (cores >= 8 ? 'high' : 'medium') : n >= 52 ? 'medium' : 'low'; }
+    else t = 'medium';
+    if (mem && mem <= 3) t = 'low';
+    else if (mem && mem <= 4 && t !== 'low') t = 'medium';
+  } else {
+    if (/rtx|gtx (9|1[0-9]|16)|radeon rx|radeon pro|arc\(tm\) a|arc a\d/.test(g)) t = 'ultra';
+    else if (/geforce|nvidia|radeon(?!.*graphics)|apple m\d|iris\(r\) xe|iris xe/.test(g)) t = 'high';
+    else if (/radeon.*graphics|vega/.test(g)) t = 'high';
+    else if (/intel/.test(g)) t = 'medium';
+    else t = 'high';
+    if (mem && mem <= 4 && t !== 'low') t = 'medium';
+  }
+  return t;
+}
+
+// ---------------------------------------------------------------------------
 // SETTINGS
 // ---------------------------------------------------------------------------
-const DEFAULTS = { name: '', room: '', bots: '9', server: '', sens: 1, tsens: 1, fov: 82, vol: 0.7, quality: 'auto', map: 'dustgrid', difficulty: 'medium', showFps: false };
+const DEFAULTS = { name: '', room: '', bots: '9', server: '', sens: 1, tsens: 1, fov: 82, vol: 0.7, quality: 'auto', map: 'dustgrid', difficulty: 'medium', showFps: false,
+  voice: false, voiceMode: 'ptt', vvol: 0.9 };
 function loadSettings() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('blockops.settings') || '{}')); }
   catch (e) { return Object.assign({}, DEFAULTS); }
@@ -41,26 +92,26 @@ class Game {
     this.canvas = $('game');
     const q = this.settings.quality;
     const dpr = window.devicePixelRatio || 1;
-    // Render resolution: "auto" starts at a sane cap and adapts to the measured frame time.
-    this.maxRatio = q === 'low' ? Math.min(dpr, 0.85) : q === 'medium' ? Math.min(dpr, 1.0) : q === 'high' ? Math.min(dpr, 2) : Math.min(dpr, isTouch ? 1.25 : 1.5);
-    this.minRatio = q === 'auto' ? Math.min(this.maxRatio, 0.8) : this.maxRatio;
-    // MSAA (smooth edges) everywhere except "low"
-    this.renderer = new Renderer(this.canvas, { antialias: q !== 'low', pixelRatio: this.maxRatio });
+    this.isTouch = isTouch;
+    // graphics tier: chosen by the player, or detected from the device ("auto")
+    this.probedGpu = probeGpu();
+    this.detectedTier = detectTier(this.probedGpu);
+    if (q === 'auto' && this.settings.autoTier && TIERS[this.settings.autoTier] &&
+        TIER_ORDER.indexOf(this.settings.autoTier) < TIER_ORDER.indexOf(this.detectedTier)) this.tierId = this.settings.autoTier;  // remembered downgrade
+    else this.tierId = TIERS[q] ? q : this.detectedTier;
+    const T = this.tier = TIERS[this.tierId];
+    this.maxRatio = Math.min(dpr, T.ratio);
+    this.minRatio = q === 'auto' ? Math.max(0.5, this.maxRatio * 0.75) : this.maxRatio;
+    this.renderer = new Renderer(this.canvas, { antialias: T.msaa, pixelRatio: this.maxRatio });
+    this.renderer.saturation = T.sat;
     this.lastScaleDown = 0;
-    // per-quality budgets (CPU + GPU)
-    const low = q === 'low', mid = q === 'medium' || (q === 'auto' && isTouch);
     this.perf = {
-      particles: low ? 150 : mid ? 300 : 600,
-      smokeCubes: low ? 34 : mid ? 50 : 70,
-      clouds: !low,
-      dynamicLights: !low,
-      hudHz: isTouch ? 20 : 30,
-      radarHz: low || isTouch ? 10 : 20,
-      chunkBudgetMs: isTouch ? 3 : 5
+      particles: T.particles, smokeCubes: T.smoke, clouds: T.clouds, dynamicLights: T.lights,
+      hudHz: isTouch ? 20 : 30, radarHz: this.tierId === 'low' || isTouch ? 10 : 20, chunkBudgetMs: isTouch ? 3 : 5
     };
     setParticleBudget(this.perf.particles);
     this.renderer.dynamicLights = this.perf.dynamicLights;
-    this.hudAt = 0; this.tagsAt = 0;
+    this.hudAt = 0; this.tagsAt = 0; this.lowFpsTimeTier = 0;
     this.frameTimes = []; this.lastScaleCheck = performance.now();
     this.detectGpu();
     this.opaque = new BoxBatch(this.renderer, 2048);
@@ -91,9 +142,24 @@ class Game {
     this.clouds = this.makeClouds();
     this.tagEls = new Map();
 
+    this.gunModels = {};
+    this.showcase = [new Avatar('T'), new Avatar('CT')];
+    this.showcase[0].setWeapon('krait'); this.showcase[1].setWeapon('sentinel');
+    this.drops = [];
+
     this.resetState();
+    this.voice = new Voice(this);
+    this.voice.onStatus = (t) => this.hud.centerMsg('🎤 ' + t, 3000);
+    this.talkers = new Map();
+    this.friends = new Friends(this);
+    this.layout = new LayoutEditor(this);
     this.bindUI();
     this.bindInput();
+    this.lobbyUrl = this.settings.server || (location.protocol.startsWith('http') ? location.origin : (window.BLOCKOPS_CONFIG && window.BLOCKOPS_CONFIG.serverUrl) || '');
+    this.friends.connect(this.lobbyUrl);
+    this.pollOnline();
+    setInterval(() => this.pollOnline(), 20000);
+    $('newsBody').innerHTML = '<b>v' + CONFIG.VERSION + '</b> · Yerdeki silahları al (E) / at (G)<br>👥 Arkadaş sistemi ve davetler<br>🎤 Takım sesli sohbeti (V)<br>🎮 Mobil buton düzeni düzenleyici<br>✨ Ultra grafik + otomatik cihaz algılama';
     window.addEventListener('resize', () => this.renderer.resize());
     window.addEventListener('orientationchange', () => setTimeout(() => this.renderer.resize(), 200));
     this.last = performance.now();
@@ -168,6 +234,21 @@ class Game {
     }
   }
 
+  async pollOnline() {
+    try {
+      const base = location.protocol.startsWith('http') && !this.settings.server ? '' : (this.lobbyUrl || '').replace(/\/$/, '');
+      const r = await fetch(base + '/health', { cache: 'no-store' });
+      const h = await r.json();
+      $('onlineCount').textContent = `${h.players} oyuncu çevrimiçi · ${h.rooms} aktif oda`;
+    } catch (e) { $('onlineCount').textContent = 'Sunucu uyanıyor…'; }
+  }
+
+  joinRoom(code) {
+    if (this.inGame) this.leave();
+    $('inRoom').value = code;
+    this.start(code);
+  }
+
   // -------------------------------------------------------------------------
   // WORLD / MAP LOADING
   // -------------------------------------------------------------------------
@@ -176,7 +257,7 @@ class Game {
     const map = S.getMap(mapId);
     S.generateMap(this.world, mapId);
     this.renderer.setTheme(map.theme);
-    if (this.settings.quality === 'low') this.renderer.fog = [map.theme.fog[0] * 0.7, map.theme.fog[1] * 0.7];
+    this.renderer.fog = [map.theme.fog[0] * this.tier.fog, Math.min(200, map.theme.fog[1] * this.tier.fog)];
     this.worldR.markAll();
     this.radarImg = WorldRenderer.topDownCanvas(this.world, map, 4, true);
     if (this.fx) { this.fx.particles = []; this.fx.decals = []; this.fx.tracers = []; }
@@ -253,10 +334,22 @@ class Game {
     bindRange('inSens2', 'sensVal2', 'sens', (v) => v.toFixed(2), (v) => { this.input.sens = v; $('inSens').value = v; $('sensVal').textContent = v.toFixed(2); });
     bindRange('inTSens', 'tsensVal', 'tsens', (v) => v.toFixed(2), (v) => { this.input.touchSens = v; });
     bindRange('inFov', 'fovVal', 'fov', (v) => v + '°');
+    bindRange('inVVol', 'vvolVal', 'vvol', (v) => Math.round(v * 100) + '%', (v) => this.voice && this.voice.setVolume(v));
     bindRange('inVol', 'volVal', 'vol', (v) => Math.round(v * 100) + '%', (v) => { this.sfx.setVolume(v); $('inVol2').value = v; $('volVal2').textContent = Math.round(v * 100) + '%'; });
     bindRange('inVol2', 'volVal2', 'vol', (v) => Math.round(v * 100) + '%', (v) => { this.sfx.setVolume(v); $('inVol').value = v; $('volVal').textContent = Math.round(v * 100) + '%'; });
     $('inQuality').value = s.quality;
-    $('inQuality').addEventListener('change', () => { s.quality = $('inQuality').value; saveSettings(s); location.reload(); });
+    $('inQuality').addEventListener('change', () => { s.quality = $('inQuality').value; s.autoTier = null; saveSettings(s); location.reload(); });
+    $('qualityInfo').textContent = `Şu an: ${this.tier.label}` + (s.quality === 'auto' ? ` (otomatik) · Cihaz: ${this.probedGpu.slice(0, 60) || 'bilinmiyor'} → önerilen ${TIERS[this.detectedTier].label}` : '');
+    $('inVoice').checked = !!s.voice;
+    $('inVoice').addEventListener('change', () => {
+      s.voice = $('inVoice').checked; saveSettings(s);
+      if (!this.inGame) return;
+      if (s.voice) this.voice.start(); else this.voice.stop();
+    });
+    $('inVoiceMode').value = s.voiceMode;
+    $('inVoiceMode').addEventListener('change', () => { s.voiceMode = $('inVoiceMode').value; saveSettings(s); this.voice.setOpenMic(s.voiceMode === 'open'); });
+    this.voice.openMic = s.voiceMode === 'open';
+    $('inName').addEventListener('change', () => { s.name = $('inName').value.trim().slice(0, 16); saveSettings(s); this.friends.rename(); });
     $('inShowFps').checked = !!s.showFps;
     this.showStats = !!s.showFps; $('stats').classList.toggle('hidden', !this.showStats);
     $('inShowFps').addEventListener('change', () => { s.showFps = $('inShowFps').checked; saveSettings(s); this.showStats = s.showFps; $('stats').classList.toggle('hidden', !this.showStats); });
@@ -278,7 +371,7 @@ class Game {
     $('chatInput').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         const v = e.target.value.trim();
-        if (v && this.net) this.net.emit('chat', v);
+        if (v && this.net) this.net.emit('chat', { m: v, team: this.chatTeam ? 1 : 0 });
         this.closeChat();
       } else if (e.key === 'Escape') this.closeChat();
       e.stopPropagation();
@@ -305,7 +398,11 @@ class Game {
     I.on('scoreboard', (on) => { if (this.inGame) this.hud.setScoreboard(on); });
     I.on('teamMenu', () => { if (this.inGame) this.setPaused(true); });
     I.on('stats', () => { this.showStats = !this.showStats; $('stats').classList.toggle('hidden', !this.showStats); });
-    I.on('chat', () => { if (this.inGame && !this.chatOpen) this.openChat(); });
+    I.on('chat', () => { if (this.inGame && !this.chatOpen) this.openChat(false); });
+    I.on('teamChat', () => { if (this.inGame && !this.chatOpen) this.openChat(true); });
+    I.on('dropWeapon', () => { if (this.inGame && this.alive && (this.slot === 1 || this.slot === 2)) { this.net.emit('drop'); this.sfx.throwNade(null); } });
+    I.on('usePress', () => { if (this.inGame && this.alive && this.nearDrop) this.net.emit('pickup', this.nearDrop.id); });
+    I.on('ptt', (on) => { if (this.inGame && this.voice.active && this.settings.voiceMode !== 'open') { this.voice.setTalking(on); this.renderVoice(); } });
     I.on('nextSpec', () => this.nextSpectate());
     I.on('escape', () => {
       if (!this.inGame) return;
@@ -334,10 +431,12 @@ class Game {
     this.input.enabled = this.inGame && !this.paused && !this.hud.buyOpen && !this.chatOpen;
     $('touch').classList.toggle('ingame', this.inGame && !this.paused && !this.hud.buyOpen);
   }
-  openChat() {
+  openChat(team) {
     this.chatOpen = true;
+    this.chatTeam = !!team;
     this.input.releaseLock();
     const c = $('chatInput');
+    c.placeholder = team ? '[TAKIM] Mesaj yaz, Enter ile gönder' : '[HERKES] Mesaj yaz, Enter ile gönder (U: takım)';
     c.classList.remove('hidden'); c.value = ''; c.focus();
     this.updateInputEnabled();
   }
@@ -379,7 +478,7 @@ class Game {
       await this.net.connect(url);
       this.bindNet();
       $('loadingText').textContent = 'Odaya katılınıyor...';
-      const res = await this.net.join({ name: s.name, room: roomCode, bots: parseInt(s.bots, 10) || 0, map: s.map, difficulty: s.difficulty });
+      const res = await this.net.join({ name: s.name, room: roomCode, bots: parseInt(s.bots, 10) || 0, map: s.map, difficulty: s.difficulty, code: this.friends.code });
       this.onJoined(res);
     } catch (err) {
       $('menuErr').textContent = err.message || String(err);
@@ -406,9 +505,13 @@ class Game {
     if (!isTouch) this.input.requestLock();
     this.hud.centerMsg(`${S.getMap(this.mapId).name} · ${(S.DIFFICULTY[this.difficulty] || {}).label} · Oda kodu: ${this.roomId} — arkadaşlarını davet et!`, 7000);
     if (isTouch && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+    this.friends.render();
   }
 
   leave() {
+    this.voice.stop();
+    this.talkers.clear();
+    this.drops = [];
     if (this.net) this.net.close();
     this.net = null;
     this.input.releaseLock();
@@ -495,7 +598,10 @@ class Game {
     n.on('bomb', (m) => this.onBombEvent(m));
     n.on('buyr', (r) => { this.hud.buyResult(r); this.sfx.ui(r.ok); });
     n.on('msg', (m) => this.hud.centerMsg(m.text, 4000));
-    n.on('chat', (m) => this.hud.chat(m));
+    n.on('chat', (m) => { this.hud.chat(m); this.sfx.ui(true); });
+    n.on('rtc', (m) => this.voice.onSignal(m));
+    n.on('talk', (m) => { if (m.on) this.talkers.set(m.i, m.n); else this.talkers.delete(m.i); this.renderVoice(); });
+    n.on('picked', (m) => { this.sfx.draw(); this.hud.centerMsg('Alındı: ' + (WEAPONS[m.w] ? WEAPONS[m.w].name : m.w), 1500); });
     n.on('disconnect', () => {
       if (!this.inGame) return;
       this.leave();
@@ -545,7 +651,12 @@ class Game {
     const prevTeam = this.myTeam;
     this.you = y;
     this.myTeam = y.tm;
-    if (prevTeam !== y.tm) this.vm.setTeam(y.tm === 'CT' ? 'CT' : 'T');
+    if (prevTeam !== y.tm) {
+      this.vm.setTeam(y.tm === 'CT' ? 'CT' : 'T');
+      this.talkers.clear(); this.renderVoice();
+      if (this.settings.voice && (y.tm === 'T' || y.tm === 'CT')) { if (this.voice.active) this.voice.restart(); else this.voice.start(); }
+    }
+    this.drops = m.d ? m.d.map(([id, wid, x, yy, z, yaw]) => ({ id, wid, x, y: yy, z, yaw })) : [];
     const wasAlive = this.alive;
     this.alive = y.a === 1;
 
@@ -827,14 +938,23 @@ class Game {
 
   updateMenu(dt) {
     this.adaptResolution(dt);
-    this.menuCam += dt * 0.06;
-    const r = 30;
-    this.camPos = [32 + Math.cos(this.menuCam) * r, 18, 32 + Math.sin(this.menuCam) * r];
-    const d = [32 - this.camPos[0], 2 - this.camPos[1], 32 - this.camPos[2]];
-    const l = Math.hypot(d[0], d[1], d[2]);
-    const a = S.dirToAngles([d[0] / l, d[1] / l, d[2] / l]);
-    this.camYaw = a.yaw; this.camPitch = a.pitch; this.camRoll = 0;
-    this.fov = 70;
+    this.menuCam += dt;
+    // cinematic: two agents stand at T spawn, the camera slowly drifts around them with the map behind
+    const t = this.menuCam;
+    const ax = 30.6, az = 6.6;
+    // camera at the south edge looking north: agents in front, the whole map behind them
+    this.camPos = [ax + 3.2 + Math.sin(t * 0.15) * 0.3, 1.95 + Math.sin(t * 0.27) * 0.06, 1.75];
+    this.camYaw = Math.PI + Math.sin(t * 0.1) * 0.05; this.camPitch = -0.06; this.camRoll = 0;
+    this.fov = 58;
+    const poses = [[ax - 0.45, az + 0.5, 0.45], [ax + 0.75, az - 0.2, -0.35]];
+    this.showcase.forEach((av, i) => {
+      const [x, z, yaw] = poses[i];
+      const breathe = Math.sin(t * 1.6 + i * 1.3);
+      av.update(dt, { x, y: 1, z, yaw: yaw + Math.sin(t * 0.4 + i) * 0.12, pitch: -0.05 + breathe * 0.03, crouch: false, alive: true,
+        speed: 0, onGround: true, reloading: false, planting: false, time: t });
+      av.hips.pos[1] += breathe * 0.012;
+      av.root.update(null);
+    });
     this.worldR.update(16, 12);
     this.fx.update(dt);
   }
@@ -986,6 +1106,26 @@ class Game {
     }
     if (this.myTeam === 'T') totalT++; else if (this.myTeam === 'CT') totalCT++;
     if (this.alive) { if (this.myTeam === 'T') aliveT++; else if (this.myTeam === 'CT') aliveCT++; }
+    // weapon on the ground nearby?
+    this.nearDrop = null;
+    if (this.alive) {
+      let bd = 1.25;
+      for (const d of this.drops) {
+        const dist = Math.hypot(d.x - this.me.x, d.z - this.me.z);
+        if (dist < bd && Math.abs(this.me.y + 0.3 - d.y) < 1.6) { bd = dist; this.nearDrop = d; }
+      }
+    }
+    if (this.nearDrop && now - (this.pickHintAt || 0) > 100) {
+      this.pickHintAt = now;
+      const w = WEAPONS[this.nearDrop.wid];
+      $('pickHint').innerHTML = `<kbd>${isTouch ? 'E' : 'E'}</kbd> AL: ${w.name}`;
+      $('pickHint').classList.remove('hidden');
+    } else if (!this.nearDrop) $('pickHint').classList.add('hidden');
+    // auto mode: if the device can't hold 28 FPS, step the tier down live (and remember it)
+    if (this.settings.quality === 'auto' && this.fps && this.fps < 28 && this.tierId !== 'low') {
+      this.lowFpsTimeTier += dt;
+      if (this.lowFpsTimeTier > 12) { this.lowFpsTimeTier = 0; this.stepTierDown(); }
+    } else this.lowFpsTimeTier = 0;
     // flash blindness (full white, then fades out over the last 60%)
     const flashLeft = this.flashUntil - now;
     const flash = flashLeft > 0 ? Math.min(1, flashLeft / (this.flashDur * 0.6)) : 0;
@@ -1014,6 +1154,30 @@ class Game {
     if (this.showStats) {
       this.hud.stats(`GPU ${this.gpuName.slice(0, 48)}\nFPS ${this.fps}  ping ${Math.round(this.net.rtt)} ms  interp ${Math.round(this.interpDelay)} ms\nçözünürlük x${this.renderer.pixelRatio.toFixed(2)}  draws ${this.renderer.stats.draws}  inst ${this.renderer.stats.instances}\nüçgen ${Math.round(this.renderer.stats.tris)}  pos ${this.me.x.toFixed(1)} ${this.me.z.toFixed(1)}`);
     }
+  }
+
+  stepTierDown() {
+    const i = TIER_ORDER.indexOf(this.tierId);
+    if (i <= 0) return;
+    this.tierId = TIER_ORDER[i - 1];
+    this.tier = TIERS[this.tierId];
+    this.settings.autoTier = this.tierId; saveSettings(this.settings);
+    this.maxRatio = Math.min(window.devicePixelRatio || 1, this.tier.ratio);
+    this.minRatio = Math.max(0.5, this.maxRatio * 0.75);
+    this.renderer.setPixelRatio(this.maxRatio);
+    this.perf.particles = this.tier.particles; setParticleBudget(this.tier.particles);
+    this.perf.smokeCubes = this.fx.smokeCubes = this.tier.smoke;
+    this.perf.clouds = this.tier.clouds;
+    this.renderer.dynamicLights = this.tier.lights;
+    this.renderer.saturation = this.tier.sat;
+    this.hud.centerMsg(`Grafik otomatik olarak "${this.tier.label}" seviyesine düşürüldü (akıcılık için)`, 4000);
+  }
+
+  renderVoice() {
+    const rows = [];
+    if (this.voice.active && (this.voice.talking || this.voice.openMic) && this.voice.stream) rows.push(`<div class="me">🎤 Sen konuşuyorsun</div>`);
+    for (const n of this.talkers.values()) rows.push(`<div>🔊 ${n.replace(/[<>&]/g, '')}</div>`);
+    $('voiceBox').innerHTML = rows.join('');
   }
 
   updateRadar(now) {
@@ -1134,6 +1298,19 @@ class Game {
     // avatars
     const me = this.myId;
     const planes = this.worldR.planesFrom(this.vp);
+    if (!this.inGame) for (const av of this.showcase) { av.root.render(O); A.pushAABB(av.root.pos[0], 1.015, av.root.pos[2], 0.9, 0.02, 0.9, 0, 0, 0, 0.35, 0); }
+    // weapons on the ground
+    for (const d of this.drops) {
+      let m = this.gunModels[d.wid];
+      if (!m) m = this.gunModels[d.wid] = buildGun(d.wid);
+      m.root.pos = [d.x, d.y + 0.05, d.z];
+      m.root.rot = [0, d.yaw, Math.PI / 2];
+      m.root.scl = [1.15, 1.15, 1.15];
+      m.root.update(null);
+      m.root.render(O);
+      A.pushAABB(d.x, Math.floor(d.y) + 0.015, d.z, 0.35, 0.02, 0.7, 0, 0, 0, 0.25, 0);
+      if (this.nearDrop === d) A.pushAABB(d.x, d.y + 0.1, d.z, 0.5, 0.25, 0.9, 1, 0.85, 0.4, 0.18, 1);
+    }
     const visible = (x, y, z, rad) => { for (const pl of planes) if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -rad) return false; return true; };
     for (const [id, r] of this.remotes) {
       if (!r.state) continue;
@@ -1141,6 +1318,7 @@ class Game {
       if (!r.state.alive && r.deadAt && performance.now() - r.deadAt > 8000) continue;
       if (!visible(r.state.x, r.state.y + 1, r.state.z, 1.4)) continue;
       r.avatar.root.render(O);
+      if (r.state.alive && r.state.onGround) A.pushAABB(r.state.x, Math.floor(r.state.y + 0.01) + 0.015, r.state.z, 0.85, 0.02, 0.85, 0, 0, 0, 0.32, 0);
     }
     // bomb
     const b = this.bombState;

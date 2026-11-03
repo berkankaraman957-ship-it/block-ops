@@ -249,6 +249,40 @@ test('difficulty: easy bots deal much less damage to humans than hard bots', () 
   assert.ok(dmgFor('easy') < dmgFor('hard') * 0.7, `easy ${dmgFor('easy')} vs hard ${dmgFor('hard')}`);
 });
 
+test('dropped weapons: death drops rifle, walking over picks it into an empty slot, E swaps', () => {
+  const r = makeRoom(); r.phase = 'live';
+  const a = r.addHuman(fakeSocket('a'), 'A'), v = r.addHuman(fakeSocket('v'), 'V'), c = r.addHuman(fakeSocket('c'), 'C');
+  r.assignTeam(a, 'T'); r.assignTeam(v, 'CT'); r.assignTeam(c, 'T');
+  a.alive = v.alive = c.alive = true;
+  place(v, 32.5, 1, 20); place(a, 32.5, 1, 10); place(c, 40.5, 1, 8);
+  v.weapons[1] = { id: 'sentinel', ammo: 17, reserve: 60 };
+  r.killPlayer(v, a, 'krait', false);
+  assert.strictEqual(r.drops.length, 1, 'rifle dropped');
+  assert.strictEqual(r.drops[0].wid, 'sentinel');
+  // let it fall, then walk A (empty slot 1) onto it
+  for (let i = 0; i < 40; i++) r.updateDrops(r.now() + 2000, 1 / 30);
+  place(a, r.drops[0].x, 1, r.drops[0].z);
+  r.updateDrops(r.now() + 2000, 1 / 30);
+  assert.ok(a.weapons[1] && a.weapons[1].id === 'sentinel' && a.weapons[1].ammo === 17, 'picked up with its ammo');
+  assert.strictEqual(r.drops.length, 0);
+  // A throws it (G), C has a krait and swaps with E
+  r.onDropWeapon(a);
+  assert.strictEqual(a.weapons[1], null);
+  for (let i = 0; i < 40; i++) r.updateDrops(r.now() - 5000, 1 / 30);
+  c.weapons[1] = { id: 'krait', ammo: 30, reserve: 90 };
+  place(c, r.drops[0].x, 1, r.drops[0].z);
+  r.onPickup(c, r.drops[0].id);
+  assert.strictEqual(c.weapons[1].id, 'sentinel');
+  assert.ok(r.drops.some((d) => d.wid === 'krait'), 'old weapon dropped on swap');
+});
+test('buying a weapon into an occupied slot drops the old one', () => {
+  const r = makeRoom(); r.phase = 'freeze'; r.buyEnd = r.now() + 10000;
+  const a = r.addHuman(fakeSocket('a'), 'A'); r.assignTeam(a, 'T'); r.spawn(a, 0); a.money = 9000;
+  r.onBuy(a, 'viper'); r.onBuy(a, 'krait');
+  assert.strictEqual(a.weapons[1].id, 'krait');
+  assert.ok(r.drops.some((d) => d.wid === 'viper'));
+});
+
 for (const mapId of S.MAP_ORDER) {
   test(`full 10-bot match on ${mapId} completes with a winner`, () => {
     Object.assign(S.CONFIG.ROUND, { WARMUP: 1, FREEZE: 1, POST: 1, GAMEOVER: 1, LIVE: 90 });

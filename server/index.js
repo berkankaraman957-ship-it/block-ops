@@ -194,12 +194,36 @@ function limiter(max, perMs) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Friends & presence. No database needed: every device has a permanent friend code
+// (generated client-side, stored in localStorage). The server only knows who is online
+// right now (lobby sockets) and which room they're playing in.
+// ---------------------------------------------------------------------------
+const presence = new Map();   // code -> { sid, name, room, since }
+const cleanCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+function presenceOf(code) {
+  const pr = presence.get(code);
+  if (!pr) return { code, online: false };
+  const r = pr.room && rooms.get(pr.room);
+  return { code, online: true, name: pr.name, room: r ? r.id : null, map: r ? r.map.name : null, players: r ? r.humanCount() : 0 };
+}
+function sendToCode(code, ev, data) {
+  const pr = presence.get(code);
+  if (!pr) return false;
+  const sock = io.sockets && io.sockets.sockets ? io.sockets.sockets.get(pr.sid) : null;
+  if (sock) { sock.emit(ev, data); return true; }
+  return false;
+}
+
 io.on('connection', (socket) => {
   let room = null;
   let player = null;
+  let myCode = null;          // set on the lobby socket via 'hello'
+  let gameCode = null;        // set on the game socket via join
   const inputLimit = limiter(120, 1000);
   const actionLimit = limiter(60, 1000);
   const shotLimit = limiter(40, 1000);
+  const voiceLimit = limiter(200, 1000);
 
   socket.on('join', (data, ack) => {
     if (typeof ack !== 'function') return;
@@ -216,6 +240,8 @@ io.on('connection', (socket) => {
       const n = Math.max(0, Math.min(9, data.bots | 0));
       for (let i = 0; i < n; i++) room.addBot();
     }
+    gameCode = cleanCode(data.code);
+    if (gameCode && presence.has(gameCode)) presence.get(gameCode).room = room.id;
     ack({ ok: true, ...room.initPayload(player) });
     room.broadcastMsg(`${player.name} odaya katıldı`);
   });
@@ -238,15 +264,65 @@ io.on('connection', (socket) => {
   socket.on('kickBots', () => { if (player && actionLimit()) room.kickBots(); });
   socket.on('chat', (text) => {
     if (!player || !actionLimit()) return;
-    const t = String(text || '').replace(/[<>]/g, '').slice(0, 120).trim();
-    if (t) io.to(room.id).emit('chat', { n: player.name, t: player.team, m: t });
+    const isTeam = text && typeof text === 'object' && text.team;
+    const raw = text && typeof text === 'object' ? text.m : text;
+    const t = String(raw || '').replace(/[<>]/g, '').slice(0, 120).trim();
+    if (!t) return;
+    const msg = { n: player.name, t: player.team, m: t, tm: isTeam ? 1 : 0 };
+    if (isTeam) { socket.emit('chat', msg); for (const s2 of room.teamSockets(player.team, player.id)) s2.emit('chat', msg); }
+    else io.to(room.id).emit('chat', msg);
   });
+  // ---- presence / friends (lobby socket)
+  socket.on('hello', (data) => {
+    const code = cleanCode(data && data.code);
+    if (code.length < 6) return;
+    myCode = code;
+    const prev = presence.get(code);
+    presence.set(code, { sid: socket.id, name: cleanName(data.name), room: prev ? prev.room : null, since: Date.now() });
+  });
+  socket.on('friends:status', (codes, ack) => {
+    if (typeof ack !== 'function' || !Array.isArray(codes) || !actionLimit()) return;
+    ack(codes.slice(0, 100).map((c) => presenceOf(cleanCode(c))));
+  });
+  socket.on('friends:request', (code) => {
+    code = cleanCode(code);
+    if (!myCode || !actionLimit() || code === myCode) return;
+    const me = presence.get(myCode);
+    sendToCode(code, 'friends:request', { code: myCode, name: me ? me.name : '' });
+  });
+  socket.on('friends:invite', (data) => {
+    const code = cleanCode(data && data.code), roomCode = cleanRoomCode(data && data.room);
+    if (!myCode || !actionLimit() || !roomCode) return;
+    const me = presence.get(myCode);
+    const r = rooms.get(roomCode);
+    sendToCode(code, 'friends:invite', { code: myCode, name: me ? me.name : '', room: roomCode, map: r ? r.map.name : '' });
+  });
+
+  // ---- weapons on the ground
+  socket.on('drop', () => { if (player && actionLimit()) room.onDropWeapon(player); });
+  socket.on('pickup', (id) => { if (player && actionLimit()) room.onPickup(player, id | 0); });
+
+  // ---- voice chat signalling (WebRTC, team only) + talking indicator
+  socket.on('rtc', (msg) => {
+    if (!player || !msg || !voiceLimit()) return;
+    const payload = { from: player.id, name: player.name, sig: msg.sig };
+    if (msg.to === 'team') { for (const s2 of room.teamSockets(player.team, player.id)) s2.emit('rtc', payload); return; }
+    const target = room.players.get(msg.to);
+    if (target && target.socket && target.team === player.team) target.socket.emit('rtc', payload);
+  });
+  socket.on('talk', (on) => {
+    if (!player || !actionLimit()) return;
+    for (const s2 of room.teamSockets(player.team, player.id)) s2.emit('talk', { i: player.id, n: player.name, on: !!on });
+  });
+
   socket.on('tsync', (clientTime, ack) => {
     if (typeof ack !== 'function') return;
     ack(room ? room.now() : 0, clientTime);
   });
   socket.on('pingrep', (ms) => { if (player && Number.isFinite(ms)) player.ping = Math.round(Math.min(999, Math.max(0, ms))); });
   socket.on('disconnect', () => {
+    if (myCode && presence.get(myCode) && presence.get(myCode).sid === socket.id) presence.delete(myCode);
+    if (gameCode && presence.has(gameCode) && presence.get(gameCode).room === (room && room.id)) presence.get(gameCode).room = null;
     if (room && player) {
       const name = player.name;
       room.removePlayer(player.id);

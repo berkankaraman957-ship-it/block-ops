@@ -6,8 +6,18 @@
 ```
 npm install
 npm start              # http://localhost:3000
-npm test               # 24 otomatik test (fizik, isabet, ekonomi, bomba, haritalar, bombalar, zorluk, her haritada tam bot maçı)
+npm test               # 26 otomatik test (fizik, isabet, ekonomi, bomba, haritalar, bombalar, zorluk, her haritada tam bot maçı)
 ```
+
+### v2.3 yenilikleri
+- **Yerdeki silahlar (CS gibi):** ölünce silah düşer, **G** ile at, üstünden geç / **E** ile değiştir; yeni silah alınca eskisi yere düşer.
+- **Arkadaş sistemi:** her cihazın kalıcı arkadaş kodu; ekleme bildirimi, çevrimiçi/maçta durumu, davet et, tek dokunuşla katıl (hesap/veritabanı gerekmez).
+- **Sohbet:** **Y** herkese, **U** takıma yazılı sohbet; **V** bas-konuş veya açık mikrofonla **takım sesli sohbeti** (WebRTC, ses doğrudan oyuncular arasında akar).
+- **Grafik seviyeleri:** Düşük / Orta / Yüksek / Ultra + *Otomatik*: ekran kartı, RAM ve çekirdek sayısından cihazı algılar, FPS düşerse kendini bir kademe indirir.
+- **Görsel:** detaylı karakterler (yelek, çanta, telsiz, kask, dizlik...), ayak altı gölgeleri, renk düzenleme, parlayan lambalar ve pencereler, piksel kırpışmalarına (T-junction) düzeltme.
+- **Hareket:** koşu hızı 7.4 m/sn, daha çevik ivmelenme.
+- **Giriş ekranı:** sinematik kamera ve ajan vitrini, animasyonlu logo, canlı oyuncu sayısı, yenilikler kartı.
+- **Mobil buton düzenleyici:** Ayarlar → Butonları Düzenle: sürükle, boyutla, saydamlık, kaydet/sıfırla.
 
 ### v2.0 yenilikleri
 - **3 harita:** Dustgrid (çöl), Harbor (liman, kapalı depo B bölgesi), Frostbite (karlı köy, mağara geçidi). Her maç sonunda sıradaki haritaya geçilir.

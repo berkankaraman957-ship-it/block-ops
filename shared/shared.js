@@ -15,7 +15,7 @@
   // CONFIG
   // ---------------------------------------------------------------------------
   const CONFIG = {
-    VERSION: '2.2.0',
+    VERSION: '2.3.0',
     TICK_RATE: 30,            // server simulation + snapshot rate (Hz)
     INPUT_RATE: 60,           // client fixed input/physics step (Hz)
     INTERP_DELAY_MS: 100,     // base remote interpolation delay (client adapts to jitter)
@@ -25,8 +25,8 @@
     WORLD: { X: 64, Y: 16, Z: 64, CHUNK: 16 },
     PLAYER: { RADIUS: 0.3, HEIGHT: 1.8, CROUCH_HEIGHT: 1.3, EYE: 1.62, CROUCH_EYE: 1.15, MAX_HP: 100 },
     MOVE: {
-      RUN_SPEED: 6.7, WALK_MUL: 0.52, CROUCH_MUL: 0.36, SCOPED_MUL: 0.55,
-      GROUND_ACCEL: 10.0, AIR_ACCEL: 12.0, AIR_WISH_CAP: 0.9, MAX_AIR_SPEED: 8.4,
+      RUN_SPEED: 7.4, WALK_MUL: 0.52, CROUCH_MUL: 0.38, SCOPED_MUL: 0.55,
+      GROUND_ACCEL: 12.0, AIR_ACCEL: 14.0, AIR_WISH_CAP: 1.0, MAX_AIR_SPEED: 9.2,
       FRICTION: 6.2, STOP_SPEED: 2.2, GRAVITY: 22.0, JUMP_VEL: 7.4, MAX_FALL: 30.0
     },
     ROUND: {
@@ -84,7 +84,8 @@
   // ---------------------------------------------------------------------------
   const BLOCK = {
     AIR: 0, GROUND: 1, WALL: 2, CRATE: 3, PLANK: 4, SAND: 5, SITE_A: 6, SITE_B: 7, METAL: 8, BRICK: 9,
-    ASPHALT: 10, CONT_R: 11, CONT_B: 12, CONT_G: 13, SNOW: 14, STONE: 15, WOOD: 16, LEAVES: 17, CONCRETE: 18, ICE: 19
+    ASPHALT: 10, CONT_R: 11, CONT_B: 12, CONT_G: 13, SNOW: 14, STONE: 15, WOOD: 16, LEAVES: 17, CONCRETE: 18, ICE: 19,
+    WINDOW: 20, LAMP: 21
   };
   // hp: 0 = indestructible
   const BLOCK_INFO = [
@@ -107,7 +108,9 @@
     { name: 'wood', hp: 0, color: [0.44, 0.31, 0.20] },
     { name: 'leaves', hp: 25, color: [0.24, 0.42, 0.30] },
     { name: 'concrete', hp: 0, color: [0.60, 0.61, 0.62] },
-    { name: 'ice', hp: 0, color: [0.66, 0.82, 0.93] }
+    { name: 'ice', hp: 0, color: [0.66, 0.82, 0.93] },
+    { name: 'window', hp: 0, color: [0.22, 0.3, 0.38] },
+    { name: 'lamp', hp: 0, color: [1.0, 0.86, 0.55], glow: 1 }
   ];
 
   // ---------------------------------------------------------------------------

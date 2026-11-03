@@ -26,15 +26,18 @@
         <div class="brand">
           <div class="logo"><span class="b1">BLOCK</span><span class="b2">OPS</span></div>
           <div class="sub">TACTICAL DRIFT</div>
+          <div class="season">SEZON 1 · OPERASYON BAŞLADI</div>
         </div>
         <nav class="tabs">
           <button class="tab on" data-tab="play">▶ OYNA</button>
+          <button class="tab" data-tab="friends">👥 ARKADAŞLAR <span id="friendsOnline" class="badge hidden"></span></button>
           <button class="tab" data-tab="settings">⚙ AYARLAR</button>
           <button class="tab" data-tab="controls">⌨ KONTROLLER</button>
         </nav>
         <div class="side-foot">
           <button id="btnInstall" class="install hidden">📲 UYGULAMA OLARAK YÜKLE</button>
           <div id="iosHint" class="ioshint hidden">📲 <b>iPhone'a kurmak için:</b> Safari'de <b>Paylaş</b> (□↑) → <b>Ana Ekrana Ekle</b></div>
+          <div class="online-chip"><i></i><span id="onlineCount">Sunucuya bağlanılıyor…</span></div>
           <div class="ver" id="verText">v2.0</div>
         </div>
       </aside>
@@ -62,21 +65,42 @@
           <div id="menuErr" class="err"></div>
         </div>
 
+        <!-- FRIENDS -->
+        <div class="pane" data-pane="friends">
+          <h3 class="sec">ARKADAŞ KODUN</h3>
+          <div class="mycode"><span id="myCode">——</span><button id="btnCopyCode">KOPYALA</button></div>
+          <p class="muted">Bu kodu arkadaşına gönder. Seni eklediğinde bildirim alırsın; çevrimiçi olduğunuzu ve hangi maçta olduğunuzu birbirinizde görürsünüz, tek dokunuşla davet edip katılırsınız.</p>
+          <h3 class="sec">ARKADAŞ EKLE</h3>
+          <div class="addrow"><input id="inFriend" maxlength="8" placeholder="Arkadaşının kodu (ör. K7QX2MP)" autocomplete="off" spellcheck="false"><button id="btnAddFriend" class="primary">EKLE</button></div>
+          <div id="friendErr" class="err"></div>
+          <h3 class="sec">ARKADAŞLARIN</h3>
+          <div id="friendList" class="friend-list"></div>
+        </div>
+
         <!-- SETTINGS -->
         <div class="pane" data-pane="settings">
           <h3 class="sec">GRAFİK</h3>
           <label>Kalite<select id="inQuality">
-            <option value="auto">Otomatik — FPS'e göre çözünürlüğü ayarlar (önerilen)</option>
-            <option value="low">Düşük — zayıf bilgisayar / pil tasarrufu</option>
+            <option value="auto">Otomatik — cihazını algılar (önerilen)</option>
+            <option value="low">Düşük — eski telefon / pil tasarrufu</option>
             <option value="medium">Orta</option>
-            <option value="high">Yüksek — keskin kenarlar (MSAA)</option></select></label>
+            <option value="high">Yüksek</option>
+            <option value="ultra">Ultra — güçlü ekran kartları</option></select></label>
+          <div id="qualityInfo" class="muted"></div>
           <label>Görüş Açısı (FOV) <b id="fovVal"></b><input id="inFov" type="range" min="65" max="105" step="1"></label>
           <label class="check"><input id="inShowFps" type="checkbox"> FPS ve ping göster</label>
           <h3 class="sec">KONTROL</h3>
           <label>Fare Hassasiyeti <b id="sensVal"></b><input id="inSens" type="range" min="0.2" max="4" step="0.05"></label>
           <label>Dokunmatik Hassasiyet <b id="tsensVal"></b><input id="inTSens" type="range" min="0.2" max="3" step="0.05"></label>
+          <h3 class="sec">DOKUNMATİK DÜZEN</h3>
+          <button id="btnLayout">BUTONLARI DÜZENLE</button>
+          <p class="muted">Butonları istediğin yere sürükle, boyutunu ayarla. Her cihaz kendi düzenini saklar.</p>
           <h3 class="sec">SES</h3>
           <label>Ses Seviyesi <b id="volVal"></b><input id="inVol" type="range" min="0" max="1" step="0.05"></label>
+          <h3 class="sec">SESLİ SOHBET</h3>
+          <label class="check"><input id="inVoice" type="checkbox"> Takım sesli sohbetini aç</label>
+          <label>Mikrofon<select id="inVoiceMode"><option value="ptt">Bas-konuş (V tuşu / 🎤 butonu)</option><option value="open">Açık mikrofon</option></select></label>
+          <label>Takım arkadaşlarının ses seviyesi <b id="vvolVal"></b><input id="inVVol" type="range" min="0" max="1" step="0.05"></label>
           <h3 class="sec">SUNUCU</h3>
           <label>Sunucu Adresi <small>— boş bırakırsan bu sitenin sunucusu</small><input id="inServer" autocomplete="off" spellcheck="false" placeholder="https://sunucu.ornek.com"></label>
         </div>
@@ -89,15 +113,23 @@
             <div><kbd>Sağ Tık</kbd>Dürbün · bombayı yakına at</div><div><kbd>Space</kbd>Zıpla</div>
             <div><kbd>C</kbd>/<kbd>Ctrl</kbd>Eğil</div><div><kbd>Shift</kbd>Sessiz yürü</div>
             <div><kbd>R</kbd>Şarjör</div><div><kbd>1 2 3</kbd>Silahlar</div>
-            <div><kbd>4</kbd>/<kbd>G</kbd>Bombalar (tekrar bas: değiştir)</div><div><kbd>Q</kbd>Son silah</div>
-            <div><kbd>E</kbd>Bomba kur / çöz (basılı tut)</div><div><kbd>B</kbd>Market</div>
+            <div><kbd>4</kbd>Bombalar (tekrar bas: değiştir)</div><div><kbd>Q</kbd>Son silah</div>
+            <div><kbd>E</kbd>Bomba kur/çöz (basılı tut) · yerdeki silahı al</div><div><kbd>G</kbd>Silahı yere at</div>
+            <div><kbd>V</kbd>Bas-konuş (sesli sohbet)</div><div><kbd>B</kbd>Market</div>
             <div><kbd>Tab</kbd>Skor tablosu</div><div><kbd>M</kbd>/<kbd>Esc</kbd>Menü · takım</div>
-            <div><kbd>Y</kbd>Sohbet</div><div><kbd>F3</kbd>Performans</div>
+            <div><kbd>Y</kbd>Genel sohbet</div><div><kbd>U</kbd>Takım sohbeti</div><div><kbd>F3</kbd>Performans</div>
           </div>
           <h3 class="sec">MOBİL</h3>
           <p class="muted">Sol taraf: joystick (az itersen sessiz yürür). Sağ taraf: sürükleyerek bak. 🔥 basılı tutup sürükle: ateş ederken nişan al. 💣 bombalar, ◎ dürbün / yakına atış.</p>
         </div>
       </section>
+    </div>
+    <div class="hero-side">
+      <div class="agents"><span class="agent t">SALDIRI</span><span class="vs">VS</span><span class="agent ct">SAVUNMA</span></div>
+      <div class="news">
+        <div class="news-h">YENİLİKLER</div>
+        <div class="news-b" id="newsBody"></div>
+      </div>
     </div>
   </div>
 
@@ -132,6 +164,8 @@
       <div id="slots"></div>
     </div>
     <div id="specBar" class="hidden"></div>
+    <div id="pickHint" class="hidden"></div>
+    <div id="voiceBox"></div>
     <div id="buyHint" class="hidden"><kbd>B</kbd> MARKET</div>
     <div id="chatLog"></div>
     <input id="chatInput" class="hidden" maxlength="120" placeholder="Mesaj yaz, Enter ile gönder">
@@ -189,6 +223,8 @@
         </div>
         <label>Fare Hassasiyeti <b id="sensVal2"></b><input id="inSens2" type="range" min="0.2" max="4" step="0.05"></label>
         <label>Ses <b id="volVal2"></b><input id="inVol2" type="range" min="0" max="1" step="0.05"></label>
+        <h3 class="sec">ARKADAŞLARINI DAVET ET</h3>
+        <div id="pauseFriends" class="friend-list small"></div>
         <button id="btnLeave" class="danger">ODADAN AYRIL</button>
       </div>
     </div>
@@ -207,10 +243,23 @@
     <div id="tScope" class="tb">◎</div>
     <div id="tSwitch" class="tb">⇄</div>
     <div id="tNade" class="tb">💣</div>
+    <div id="tDrop" class="tb sm">⬇</div>
+    <div id="tChat" class="tb sm">💬</div>
+    <div id="tMic" class="tb sm">🎤</div>
     <div id="tBuy" class="tb sm">$</div>
     <div id="tScore" class="tb sm">☰</div>
     <div id="tMenu" class="tb sm">⏸</div>
   </div>
+
+  <div id="layoutEditor" class="hidden">
+    <div class="le-bar">
+      <b>BUTON DÜZENİ</b><span id="layoutSel"></span>
+      <label>Boyut<input id="inBtnSize" type="range" min="0.6" max="1.8" step="0.05" value="1"></label>
+      <label>Saydamlık<input id="inBtnAlpha" type="range" min="0.3" max="1" step="0.05" value="1"></label>
+      <button id="btnLayoutReset">SIFIRLA</button><button id="btnLayoutCancel">İPTAL</button><button id="btnLayoutSave" class="primary">KAYDET</button>
+    </div>
+  </div>
+  <div id="toasts"></div>
 
   <div id="updateBar" class="hidden"><span>🔄 <b>Yeni güncelleme hazır!</b> <small id="updateNote"></small></span><button id="btnUpdate" class="primary">GÜNCELLE</button><button id="btnUpdateLater" class="later">✕</button></div>
 

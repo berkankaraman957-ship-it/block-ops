@@ -101,6 +101,18 @@ function paintTile(img, type) {
           k = 0.75 + rng() * 0.5;
           if (rng() < 0.12) tint = [0.9, 0.94, 0.98]; // snow on pine leaves
           break;
+        case BLOCK.WINDOW: {
+          const frame = x === 0 || x === 15 || y === 0 || y === 15 || x === 7 || x === 8 || y === 7 || y === 8;
+          if (frame) tint = [0.32, 0.3, 0.27];
+          else k = 0.8 + (x + y < 12 ? 0.55 : 0) * (((x - y + 20) % 7) < 2 ? 1 : 0.35);
+          break;
+        }
+        case BLOCK.LAMP: {
+          const r = Math.hypot(x - 7.5, y - 7.5);
+          k = r < 5 ? 1.0 : r < 7 ? 0.8 : 0.45;
+          if (x === 0 || y === 0 || x === 15 || y === 15) tint = [0.25, 0.25, 0.25];
+          break;
+        }
         case BLOCK.ICE:
           k = 1 + ((x + y) % 9 === 0 ? 0.25 : 0) + (rng() - 0.5) * 0.06;
           break;
@@ -121,6 +133,7 @@ function paintTile(img, type) {
 const FACES = [];
 for (let a = 0; a < 3; a++) for (const s of [1, -1]) FACES.push({ a, s, u: (a + 1) % 3, v: (a + 2) % 3 });
 const AO_CURVE = [0.5, 0.68, 0.84, 1.0];
+const EPS = 0.0025;
 const CORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]];
 
 export class WorldRenderer {
@@ -261,6 +274,11 @@ export class WorldRenderer {
           q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[A] += f.s;
           if (solid(q[0], q[1], q[2])) continue;
           const fp0 = q[0], fp1 = q[1], fp2 = q[2];
+          if (BLOCK_INFO[t].glow) {
+            for (let k = 0; k < 4; k++) { mS[mi * 4 + k] = 1.55; mA[mi * 4 + k] = 3; }
+            mT[mi] = t; mU[mi] = 1;
+            continue;
+          }
           let uni = 1;
           for (let k = 0; k < 4; k++) {
             const cu = CORNERS[k][0], cv = CORNERS[k][1];
@@ -317,8 +335,9 @@ export class WorldRenderer {
             for (const k of ord) {
               const cu = CORNERS[k][0], cv = CORNERS[k][1];
               pos[A] = base[A] + d + (f.s > 0 ? 1 : 0);
-              pos[U] = base[U] + i + cu * w;
-              pos[V] = base[V] + j + cv * h;
+              // +/-EPS: overlaps neighbouring quads by a hair → no T-junction cracks ("sparkling pixels")
+              pos[U] = base[U] + i + cu * w + (cu ? EPS : -EPS);
+              pos[V] = base[V] + j + cv * h + (cv ? EPS : -EPS);
               // world-aligned texture coordinates (V follows world Y on walls)
               let tu, tv;
               if (A === 0) { tu = pos[2]; tv = pos[1]; } else if (A === 1) { tu = pos[2]; tv = pos[0]; } else { tu = pos[0]; tv = pos[1]; }

@@ -241,7 +241,7 @@ export class HUD {
   }
   chat(m) {
     const el = document.createElement('div');
-    el.className = m.t;
+    el.className = m.t + (m.tm ? ' tm' : '');
     el.textContent = `${m.n}: ${m.m}`;
     const log = $('chatLog');
     log.appendChild(el);

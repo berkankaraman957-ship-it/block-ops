@@ -271,6 +271,7 @@ export class Avatar {
   }
   build(team) {
     const st = TEAM_STYLE[team] || TEAM_STYLE.T;
+    const ct = team === 'CT';
     const r = this.root;
     r.children = []; r.boxes = [];
     this.hips = r.add(new Node('hips'));
@@ -278,32 +279,57 @@ export class Avatar {
     this.legL = this.hips.add(new Node('legL')); this.legL.pos = [-0.12, 0, 0];
     this.legR = this.hips.add(new Node('legR')); this.legR.pos = [0.12, 0, 0];
     for (const l of [this.legL, this.legR]) {
-      l.box(0.2, 0.62, 0.22, 0, -0.31, 0, st.pants);
-      l.box(0.22, 0.15, 0.27, 0, -0.67, -0.02, 0x2a2420);
+      l.box(0.21, 0.36, 0.23, 0, -0.18, 0, st.pants);                 // thigh
+      l.box(0.2, 0.28, 0.21, 0, -0.5, 0, st.pants);                   // shin
+      l.box(0.22, 0.12, 0.08, 0, -0.38, -0.12, ct ? 0x2a2f36 : 0x3b3127); // knee pad
+      l.box(0.23, 0.14, 0.29, 0, -0.68, -0.03, 0x231e19);              // boot
+      l.box(0.235, 0.03, 0.3, 0, -0.745, -0.03, 0x151210);             // sole
     }
+    this.legR.box(0.06, 0.16, 0.12, 0.13, -0.16, 0.02, 0x2a2420);       // thigh holster
     this.torso = this.hips.add(new Node('torso'));
     this.torso.box(0.5, 0.6, 0.28, 0, 0.3, 0, st.shirt);
-    this.torso.box(0.52, 0.38, 0.31, 0, 0.32, 0, st.vest);
-    this.torso.box(0.52, 0.06, 0.3, 0, 0.04, 0, 0x2a2420);
-    this.torso.box(0.12, 0.1, 0.04, -0.12, 0.3, -0.17, st.accent);
+    this.torso.box(0.53, 0.4, 0.32, 0, 0.32, 0, st.vest);
+    this.torso.box(0.54, 0.07, 0.31, 0, 0.04, 0, 0x2a2420);              // belt
+    this.torso.box(0.08, 0.06, 0.04, 0, 0.04, -0.16, 0x9a8a5a);          // buckle
+    for (const x of [-0.17, -0.06, 0.05]) this.torso.box(0.09, 0.12, 0.05, x, 0.28, -0.18, ct ? 0x2a3540 : 0x4a3d2c); // mag pouches
+    this.torso.box(0.12, 0.1, 0.04, 0.17, 0.42, -0.17, st.accent, 0.15); // patch
+    this.torso.box(0.2, 0.06, 0.32, -0.16, 0.56, 0, st.vest);            // shoulder straps
+    this.torso.box(0.2, 0.06, 0.32, 0.16, 0.56, 0, st.vest);
+    // backpack: CT radio with antenna, T satchel
+    if (ct) {
+      this.torso.box(0.36, 0.38, 0.14, 0, 0.32, 0.22, 0x2b3440);
+      this.torso.box(0.1, 0.08, 0.04, 0.1, 0.42, 0.3, 0x46c070, 0.8);
+      this.torso.box(0.02, 0.42, 0.02, -0.12, 0.7, 0.25, 0x111111);
+    } else {
+      this.torso.box(0.38, 0.34, 0.16, 0, 0.3, 0.23, 0x6a5232);
+      this.torso.box(0.38, 0.06, 0.17, 0, 0.42, 0.23, 0x4a3a24);
+    }
     this.head = this.torso.add(new Node('head')); this.head.pos = [0, 0.6, 0];
     this.head.box(0.4, 0.4, 0.4, 0, 0.21, 0, st.skin);
-    if (team === 'T') {
-      this.head.box(0.42, 0.2, 0.42, 0, 0.12, 0, st.mask);
-      this.head.box(0.42, 0.1, 0.42, 0, 0.38, 0, st.mask);
-      this.head.box(0.3, 0.05, 0.02, 0, 0.27, -0.205, 0x111111);
+    this.head.box(0.07, 0.05, 0.02, -0.09, 0.25, -0.205, 0x1b1b1b);      // eyes
+    this.head.box(0.07, 0.05, 0.02, 0.09, 0.25, -0.205, 0x1b1b1b);
+    this.head.box(0.06, 0.07, 0.04, 0, 0.18, -0.215, st.skin);            // nose
+    if (!ct) {
+      this.head.box(0.42, 0.2, 0.42, 0, 0.1, 0, st.mask);                 // balaclava lower
+      this.head.box(0.42, 0.12, 0.42, 0, 0.37, 0, st.mask);               // balaclava top
+      this.head.box(0.32, 0.02, 0.02, 0, 0.3, -0.212, 0x111111);
+      this.head.box(0.12, 0.06, 0.03, 0, 0.42, -0.2, 0xb33a2a);            // headband knot
     } else {
-      this.head.box(0.45, 0.15, 0.45, 0, 0.37, 0, 0x3d4a3a);
-      this.head.box(0.47, 0.03, 0.47, 0, 0.3, 0, 0x2f3a2c);
-      this.head.box(0.32, 0.07, 0.03, 0, 0.25, -0.215, st.accent, 0.5);
-      this.head.box(0.3, 0.1, 0.02, 0, 0.1, -0.205, st.mask);
+      this.head.box(0.46, 0.16, 0.46, 0, 0.38, 0, 0x3d4a3a);              // helmet
+      this.head.box(0.48, 0.04, 0.48, 0, 0.3, 0, 0x2f3a2c);               // helmet rim
+      this.head.box(0.34, 0.08, 0.04, 0, 0.36, -0.225, 0x1a1a1a);         // goggles strap/frame
+      this.head.box(0.3, 0.06, 0.02, 0, 0.36, -0.245, st.accent, 0.6);     // lens
+      this.head.box(0.32, 0.12, 0.03, 0, 0.09, -0.205, st.mask);           // face mask
+      this.head.box(0.06, 0.1, 0.06, -0.24, 0.24, 0, 0x1a1a1a);            // headset
     }
     this.armR = this.torso.add(new Node('armR')); this.armR.pos = [0.32, 0.55, 0];
     this.armL = this.torso.add(new Node('armL')); this.armL.pos = [-0.32, 0.55, 0];
     for (const a of [this.armR, this.armL]) {
-      a.box(0.15, 0.36, 0.15, 0, -0.17, 0, st.sleeve);
-      a.box(0.14, 0.26, 0.14, 0, -0.45, 0, st.skin);
-      a.box(0.15, 0.1, 0.15, 0, -0.6, 0, st.glove);
+      a.box(0.16, 0.2, 0.16, 0, -0.08, 0, st.vest);                       // shoulder pad
+      a.box(0.15, 0.36, 0.15, 0, -0.2, 0, st.sleeve);
+      a.box(0.14, 0.24, 0.14, 0, -0.46, 0, ct ? st.sleeve : st.skin);
+      a.box(0.16, 0.06, 0.16, 0, -0.36, 0, ct ? 0x23282e : st.sleeve);    // rolled sleeve / elbow pad
+      a.box(0.15, 0.11, 0.15, 0, -0.61, 0, st.glove);
     }
     this.gunMount = this.armR.add(new Node('gunMount'));
     this.gunMount.pos = [0, -0.62, 0.02];
@@ -343,17 +369,17 @@ export class Avatar {
     }
     this.deathT = 0;
     const speed = st.speed || 0;
-    const moving = st.onGround ? Math.min(1, speed / 5.6) : 0.2;
+    const moving = st.onGround ? Math.min(1, speed / 6.5) : 0.2;
     this.walkAmt += (moving - this.walkAmt) * Math.min(1, dt * 10);
-    this.walkPhase += dt * (3 + speed * 1.6);
+    this.walkPhase += dt * (3 + speed * 1.75);
     const crouchTarget = st.crouch || st.planting ? 1 : 0;
     this.crouchAmt += (crouchTarget - this.crouchAmt) * Math.min(1, dt * 12);
-    const sw = Math.sin(this.walkPhase) * 0.75 * this.walkAmt;
+    const sw = Math.sin(this.walkPhase) * 0.85 * this.walkAmt;
     const c = this.crouchAmt;
     this.hips.pos = [0, 0.75 - 0.4 * c + Math.abs(Math.cos(this.walkPhase)) * 0.04 * this.walkAmt, 0];
     this.legL.rot = [sw - 1.0 * c, 0, 0];
     this.legR.rot = [-sw - 0.6 * c, 0, 0];
-    this.torso.rot = [-0.12 * c + (st.onGround ? 0 : -0.1), 0, Math.sin(this.walkPhase) * 0.03 * this.walkAmt];
+    this.torso.rot = [-0.12 * c - 0.08 * this.walkAmt + (st.onGround ? 0 : -0.1), Math.sin(this.walkPhase) * 0.06 * this.walkAmt, Math.sin(this.walkPhase) * 0.035 * this.walkAmt];
     this.head.rot = [st.pitch * 0.55, 0, 0];
     this.recoil = Math.max(0, this.recoil - dt * 8);
     const aim = Math.PI / 2 + st.pitch * 0.85 + this.recoil * 0.25;

@@ -117,7 +117,7 @@ const server = http.createServer((req, res) => {
   try { url = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400); res.end(); return; }
   if (url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, version: S.CONFIG.VERSION, db: store.backend.name, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
+    res.end(JSON.stringify({ ok: true, version: S.CONFIG.VERSION, db: store.backend.name, dbOk: store.backend.name === 'supabase' ? store.dbOk !== false : undefined, dbProblem: store.problem || undefined, rooms: rooms.size, players: [...rooms.values()].reduce((a, r) => a + r.humanCount(), 0) }));
     return;
   }
   if (url === '/version') {

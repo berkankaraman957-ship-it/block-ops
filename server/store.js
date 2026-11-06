@@ -128,16 +128,30 @@ class FileBackend {
 class Store {
   constructor(opts) {
     opts = opts || {};
-    const url = opts.url !== undefined ? opts.url : process.env.SUPABASE_URL;
-    const key = opts.key !== undefined ? opts.key : (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY);
-    if (url && key) this.backend = new SupabaseBackend(url, key);
+    let url = opts.url !== undefined ? opts.url : process.env.SUPABASE_URL;
+    let key = opts.key !== undefined ? opts.key : (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY);
+    url = (url || '').trim(); key = (key || '').trim();
+    this.problem = '';
+    // a masked key copied from the dashboard ("sb_secret_abc…••••") can never work: say so loudly
+    if (key && !/^[\x21-\x7e]+$/.test(key)) {
+      this.problem = 'SUPABASE_SERVICE_KEY geçersiz: gizlenmiş (•••) ya da hatalı karakterli anahtar kopyalanmış. Supabase\'te göz simgesiyle anahtarı GÖSTER, sonra kopyala.';
+      console.error('[store] ' + this.problem);
+    }
+    if (url && key && !this.problem) this.backend = new SupabaseBackend(url, key);
     else this.backend = new FileBackend(opts.file || path.join(__dirname, '..', 'data', 'accounts.json'));
     this.cache = new Map();     // code -> profile
     this.dirty = new Set();
     this.loading = new Map();   // code -> promise (dedupe concurrent loads)
     this.saveTimer = setInterval(() => this.flushDirty(), opts.flushMs || 4000);
     if (this.saveTimer.unref) this.saveTimer.unref();
-    console.log('[store] hesap deposu:', this.backend.name === 'supabase' ? 'Supabase' : 'yerel dosya (SUPABASE_URL ayarlı değil)');
+    console.log('[store] hesap deposu:', this.backend.name === 'supabase' ? 'Supabase' : 'yerel dosya (' + (this.problem ? 'anahtar geçersiz' : 'SUPABASE_URL / SUPABASE_SERVICE_KEY ayarlı değil') + ')');
+    if (this.backend.name === 'supabase') this.selfTest();
+  }
+
+  /** one cheap request at startup so a wrong key shows up in the logs immediately */
+  async selfTest() {
+    try { await this.backend.req('GET', '/players?select=id&limit=1'); console.log('[store] Supabase bağlantısı OK'); this.dbOk = true; }
+    catch (e) { this.problem = 'Supabase bağlantı testi başarısız: ' + e.message; console.error('[store] ' + this.problem); this.dbOk = false; }
   }
 
   async get(code) {
